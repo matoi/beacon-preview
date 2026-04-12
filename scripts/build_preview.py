@@ -45,7 +45,7 @@ def build_paths(input_path: Path, output_dir: Path, name: str | None) -> tuple[P
 def run_pandoc(pandoc: str, input_path: Path, output_path: Path) -> None:
     try:
         subprocess.run(
-            [pandoc, str(input_path), "-s", "-o", str(output_path)],
+            [pandoc, "-f", "gfm", str(input_path), "-s", "-o", str(output_path)],
             check=True,
         )
     except FileNotFoundError as exc:
@@ -79,6 +79,20 @@ def run_beaconify(input_path: Path, output_html: Path, output_manifest: Path, pr
         raise RuntimeError(f"beaconify step failed with exit status {exc.returncode}") from exc
 
 
+def ensure_artifacts_exist(html_path: Path, manifest_path: Path) -> None:
+    """Validate that the expected preview artifacts were created."""
+    if not html_path.is_file():
+        raise RuntimeError(f"expected HTML artifact was not created: {html_path}")
+    if not manifest_path.is_file():
+        raise RuntimeError(f"expected manifest artifact was not created: {manifest_path}")
+
+
+def emit_artifact_paths(html_path: Path, manifest_path: Path) -> None:
+    """Emit the builder stdout contract as absolute HTML and manifest paths."""
+    print(html_path)
+    print(manifest_path)
+
+
 def main() -> int:
     try:
         args = parse_args()
@@ -92,8 +106,8 @@ def main() -> int:
             run_pandoc(args.pandoc, input_path, pandoc_html)
             run_beaconify(pandoc_html, html_path, manifest_path, args.prefix)
 
-        print(html_path)
-        print(manifest_path)
+        ensure_artifacts_exist(html_path, manifest_path)
+        emit_artifact_paths(html_path, manifest_path)
         return 0
     except RuntimeError as exc:
         print(f"build_preview.py: {exc}", file=sys.stderr)

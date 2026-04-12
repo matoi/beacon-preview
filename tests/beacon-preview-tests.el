@@ -49,6 +49,25 @@
       (setq-local major-mode 'markdown-mode)
       (should (string= (beacon-preview-current-heading-anchor) "repeat-1")))))
 
+(ert-deftest beacon-preview-current-heading-anchor-falls-back-when-manifest-entry-is-missing ()
+  (let ((beacon-preview--manifest
+         '(((kind . "h2") (text . "Repeat") (anchor . "repeat")))))
+    (with-temp-buffer
+      (insert "# Top\n\n## Repeat\nA\n\n## Repeat\nB\n")
+      (goto-char (point-max))
+      (setq-local major-mode 'markdown-mode)
+      (should (string= (beacon-preview-current-heading-anchor) "repeat-1")))))
+
+(ert-deftest beacon-preview-current-heading-anchor-falls-back-when-manifest-text-disagrees ()
+  (let ((beacon-preview--manifest
+         '(((kind . "h2") (text . "Other Section") (anchor . "other-section"))
+           ((kind . "h2") (text . "Still Other") (anchor . "still-other")))))
+    (with-temp-buffer
+      (insert "# Top\n\n## Real Section\nBody\n")
+      (goto-char (point-max))
+      (setq-local major-mode 'markdown-mode)
+      (should (string= (beacon-preview-current-heading-anchor) "real-section")))))
+
 (ert-deftest beacon-preview-markdown-current-heading-on-heading-line ()
   (with-temp-buffer
     (insert "# Top\n\n## Section\nBody\n")
@@ -132,6 +151,170 @@
       (should (string=
                (beacon-preview-current-heading-anchor)
                "状態モデル-per-position-tracker-配列")))))
+
+(ert-deftest beacon-preview-current-block-anchor-resolves-fenced-code-block-to-pre ()
+  (let ((beacon-preview--manifest
+         '(((kind . "h2") (text . "Section") (anchor . "section"))
+           ((kind . "pre") (index . 1) (anchor . "beacon-pre-1"))
+           ((kind . "pre") (index . 2) (anchor . "beacon-pre-2")))))
+    (with-temp-buffer
+      (insert
+       "## Section\n\n"
+       "```elisp\n(message \"one\")\n```\n\n"
+       "```elisp\n(message \"two\")\n```\n")
+      (goto-char (point-min))
+      (search-forward "two")
+      (setq-local major-mode 'markdown-mode)
+      (should (string= (beacon-preview-current-block-anchor)
+                       "beacon-pre-2")))))
+
+(ert-deftest beacon-preview-current-anchor-falls-back-to-heading-when-block-anchor-is-missing ()
+  (let ((beacon-preview--manifest
+         '(((kind . "h2")
+            (text . "状態モデル: per-position tracker 配列")
+            (anchor . "状態モデル-per-position-tracker-配列")))))
+    (with-temp-buffer
+      (insert
+       "## 状態モデル: per-position tracker 配列\n\n"
+       "```c\n"
+       "#define NICOLA_MAX_TRACKERS 6\n"
+       "```\n")
+      (goto-char (point-min))
+      (search-forward "#define")
+      (setq-local major-mode 'markdown-mode)
+      (should (string=
+               (beacon-preview--current-anchor-maybe)
+               "状態モデル-per-position-tracker-配列")))))
+
+(ert-deftest beacon-preview-current-block-anchor-resolves-blockquote ()
+  (let ((beacon-preview--manifest
+         '(((kind . "h2") (text . "Section") (anchor . "section"))
+           ((kind . "blockquote") (index . 1) (anchor . "beacon-blockquote-1"))
+           ((kind . "blockquote") (index . 2) (anchor . "beacon-blockquote-2")))))
+    (with-temp-buffer
+      (insert
+       "## Section\n\n"
+       "> first quote\n\n"
+       "> second quote\n")
+      (goto-char (point-min))
+      (search-forward "second quote")
+      (beginning-of-line)
+      (setq-local major-mode 'markdown-mode)
+      (should (string= (beacon-preview-current-block-anchor)
+                       "beacon-blockquote-2")))))
+
+(ert-deftest beacon-preview-current-block-anchor-resolves-table ()
+  (let ((beacon-preview--manifest
+         '(((kind . "h2") (text . "Section") (anchor . "section"))
+           ((kind . "table") (index . 1) (anchor . "beacon-table-1"))
+           ((kind . "table") (index . 2) (anchor . "beacon-table-2")))))
+    (with-temp-buffer
+      (insert
+       "## Section\n\n"
+       "| A | B |\n"
+       "| --- | --- |\n"
+       "| 1 | 2 |\n\n"
+       "| C | D |\n"
+       "| --- | --- |\n"
+       "| 3 | 4 |\n")
+      (goto-char (point-min))
+      (search-forward "| C | D |")
+      (beginning-of-line)
+      (setq-local major-mode 'markdown-mode)
+      (should (string= (beacon-preview-current-block-anchor)
+                       "beacon-table-2")))))
+
+(ert-deftest beacon-preview-current-block-anchor-resolves-list-item ()
+  (let ((beacon-preview--manifest
+         '(((kind . "h2") (text . "Section") (anchor . "section"))
+           ((kind . "li") (index . 1) (anchor . "beacon-li-1"))
+           ((kind . "li") (index . 2) (anchor . "beacon-li-2")))))
+    (with-temp-buffer
+      (insert
+       "## Section\n\n"
+       "- first item\n"
+       "- second item\n")
+      (goto-char (point-min))
+      (search-forward "second item")
+      (beginning-of-line)
+      (setq-local major-mode 'markdown-mode)
+      (should (string= (beacon-preview-current-block-anchor)
+                       "beacon-li-2")))))
+
+(ert-deftest beacon-preview-current-block-anchor-resolves-paragraph ()
+  (let ((beacon-preview--manifest
+         '(((kind . "h2") (text . "Section") (anchor . "section"))
+           ((kind . "p") (index . 1) (anchor . "beacon-p-1"))
+           ((kind . "p") (index . 2) (anchor . "beacon-p-2")))))
+    (with-temp-buffer
+      (insert
+       "## Section\n\n"
+       "First paragraph line 1.\n"
+       "Second line same paragraph.\n\n"
+       "Another paragraph.\n")
+      (goto-char (point-min))
+      (search-forward "Another paragraph")
+      (beginning-of-line)
+      (setq-local major-mode 'markdown-mode)
+      (should (string= (beacon-preview-current-block-anchor)
+                       "beacon-p-2")))))
+
+(ert-deftest beacon-preview-current-anchor-falls-back-to-heading-when-paragraph-anchor-is-missing ()
+  (let ((beacon-preview--manifest
+         '(((kind . "h2") (text . "Section") (anchor . "section")))))
+    (with-temp-buffer
+      (insert
+       "## Section\n\n"
+       "Only paragraph text here.\n")
+      (goto-char (point-min))
+      (search-forward "Only paragraph")
+      (setq-local major-mode 'markdown-mode)
+      (should (string= (beacon-preview--current-anchor-maybe)
+                       "section")))))
+
+(ert-deftest beacon-preview-markdown-current-heading-ignores-atx-like-lines-inside-fenced-code-block ()
+  (with-temp-buffer
+    (insert
+     "# Top\n\n"
+     "## Real Section\n\n"
+     "```markdown\n"
+     "### Fake Heading\n"
+     "still code\n"
+     "```\n")
+    (goto-char (point-min))
+    (search-forward "still code")
+    (setq-local major-mode 'markdown-mode)
+    (should (equal (beacon-preview--markdown-current-heading)
+                   '(:level 2 :text "Real Section")))))
+
+(ert-deftest beacon-preview-markdown-current-heading-ignores-setext-like-lines-inside-fenced-code-block ()
+  (with-temp-buffer
+    (insert
+     "# Top\n\n"
+     "## Real Section\n\n"
+     "```text\n"
+     "Fake Heading\n"
+     "---\n"
+     "still code\n"
+     "```\n")
+    (goto-char (point-min))
+    (search-forward "still code")
+    (setq-local major-mode 'markdown-mode)
+    (should (equal (beacon-preview--markdown-current-heading)
+                   '(:level 2 :text "Real Section")))))
+
+(ert-deftest beacon-preview-markdown-current-heading-returns-nil-for-fence-only-pseudo-headings ()
+  (with-temp-buffer
+    (insert
+     "```markdown\n"
+     "# Fake Heading\n"
+     "Pseudo Heading\n"
+     "---\n"
+     "```\n")
+    (goto-char (point-min))
+    (search-forward "Pseudo Heading")
+    (setq-local major-mode 'markdown-mode)
+    (should-not (beacon-preview--markdown-current-heading))))
 
 (ert-deftest beacon-preview-pandoc-like-slug-preserves-non-ascii ()
   (should (string= (beacon-preview--pandoc-like-slug "日本語 見出し")
@@ -263,7 +446,79 @@
     (should (string-match-p "section" script))
     (should (string-match-p "0\\.2500000000" script))
     (should (string-match-p "window\\.scrollTo" script))
-    (should (string-match-p "setTimeout" script))))
+    (should (string-match-p "setTimeout" script))
+    (should (string-match-p "BeaconPreview\\.flashAnchor" script))))
+
+(ert-deftest beacon-preview-edited-anchors-deduplicates-multiple-edits ()
+  (let ((beacon-preview--manifest
+         '(((kind . "p") (index . 1) (anchor . "beacon-p-1"))
+           ((kind . "p") (index . 2) (anchor . "beacon-p-2")))))
+    (with-temp-buffer
+      (insert
+       "First paragraph line 1.\n"
+       "Second line same paragraph.\n\n"
+       "Another paragraph.\n")
+      (setq-local major-mode 'markdown-mode)
+      (let ((first-pos 5)
+            (duplicate-pos 12)
+            (second-pos (save-excursion
+                          (goto-char (point-min))
+                          (search-forward "Another")
+                          (match-beginning 0))))
+        (setq-local beacon-preview--edited-positions
+                    (list first-pos duplicate-pos second-pos))
+        (should (equal (beacon-preview--edited-anchors)
+                       '("beacon-p-1" "beacon-p-2")))))))
+
+(ert-deftest beacon-preview-flash-visible-anchors-script-uses-visibility-gated-api ()
+  (let ((script (beacon-preview--flash-visible-anchors-script
+                 '("beacon-p-1" "beacon-p-2"))))
+    (should (string-match-p "flashAnchorIfVisible" script))
+    (should (string-match-p "beacon-p-1" script))
+    (should (string-match-p "beacon-p-2" script))))
+
+(ert-deftest beacon-preview-build-and-refresh-preserve-queues-visible-edited-flash ()
+  (let* ((tmp-root (make-temp-file "beacon-preview-ert-" t))
+         (source-file (expand-file-name "sample.md" tmp-root))
+         (beacon-preview-temporary-root (expand-file-name "preview-root" tmp-root))
+         (beacon-preview-refresh-jump-behavior 'preserve)
+         (preview-buffer (generate-new-buffer " *beacon-preview-live*"))
+         (executed nil))
+    (unwind-protect
+        (progn
+          (with-temp-file source-file
+            (insert "# Title\n\nFirst paragraph.\n\nSecond paragraph.\n"))
+          (find-file source-file)
+          (goto-char (point-min))
+          (search-forward "First")
+          (setq-local major-mode 'markdown-mode)
+          (beacon-preview-build-current-file)
+          (setq-local beacon-preview--edited-positions (list (point)))
+          (setq beacon-preview--xwidget-buffer preview-buffer)
+          (cl-letf (((symbol-function 'xwidget-webkit-current-session)
+                     (lambda () 'live-session))
+                    ((symbol-function 'beacon-preview--open-preview)
+                     (lambda (&rest _args)
+                       (ert-fail "preserve mode should not reopen preview")))
+                    ((symbol-function 'xwidget-webkit-execute-script)
+                     (lambda (_session script)
+                       (setq executed script))))
+            (beacon-preview-build-and-refresh))
+          (should (string-match-p "sessionStorage\\.setItem" executed))
+          (with-current-buffer preview-buffer
+            (should (string-match-p "sessionStorage\\.getItem"
+                                    beacon-preview--pending-sync-script))
+            (should (string-match-p "flashAnchorIfVisible"
+                                    beacon-preview--pending-sync-script))
+            (should (string-match-p "beacon-p-1"
+                                    beacon-preview--pending-sync-script)))
+          (kill-buffer (current-buffer)))
+      (ignore-errors
+        (when (buffer-live-p preview-buffer)
+          (kill-buffer preview-buffer))
+        (when (get-file-buffer source-file)
+          (kill-buffer (get-file-buffer source-file))))
+      (delete-directory tmp-root t))))
 
 (ert-deftest beacon-preview-build-current-file-creates-temp-artifacts ()
   (let* ((tmp-root (make-temp-file "beacon-preview-ert-" t))
@@ -323,6 +578,45 @@
           (kill-buffer (get-file-buffer source-file))))
       (delete-directory tmp-root t))))
 
+(ert-deftest beacon-preview-build-and-refresh-preserves-preview-position-when-configured ()
+  (let* ((tmp-root (make-temp-file "beacon-preview-ert-" t))
+         (source-file (expand-file-name "sample.md" tmp-root))
+         (beacon-preview-temporary-root (expand-file-name "preview-root" tmp-root))
+         (beacon-preview-refresh-jump-behavior 'preserve)
+         (preview-buffer (generate-new-buffer " *beacon-preview-live*"))
+         (executed nil)
+         (opened nil))
+    (unwind-protect
+        (progn
+          (with-temp-file source-file
+            (insert "# Title\n\n## Section\nBody\n"))
+          (find-file source-file)
+          (goto-char (point-max))
+          (setq-local major-mode 'markdown-mode)
+          (beacon-preview-build-current-file)
+          (setq beacon-preview--xwidget-buffer preview-buffer)
+          (cl-letf (((symbol-function 'xwidget-webkit-current-session)
+                     (lambda () 'live-session))
+                    ((symbol-function 'beacon-preview--open-preview)
+                     (lambda (&rest _args)
+                       (setq opened t)))
+                    ((symbol-function 'xwidget-webkit-execute-script)
+                     (lambda (_session script)
+                       (setq executed script))))
+            (beacon-preview-build-and-refresh))
+          (should-not opened)
+          (should (string-match-p "sessionStorage\\.setItem" executed))
+          (with-current-buffer preview-buffer
+            (should (string-match-p "sessionStorage\\.getItem"
+                                    beacon-preview--pending-sync-script)))
+          (kill-buffer (current-buffer)))
+      (ignore-errors
+        (when (buffer-live-p preview-buffer)
+          (kill-buffer preview-buffer))
+        (when (get-file-buffer source-file)
+          (kill-buffer (get-file-buffer source-file))))
+      (delete-directory tmp-root t))))
+
 (ert-deftest beacon-preview-build-and-refresh-reopens-live-preview-from-fenced-code-position ()
   (let* ((tmp-root (make-temp-file "beacon-preview-ert-" t))
          (source-file (expand-file-name "sample.md" tmp-root))
@@ -356,8 +650,166 @@
                        (lambda () 'live-session)))
               (beacon-preview-build-and-refresh))
             (should (string= opened-file html-path))
-            (should (string= opened-anchor
-                             "状態モデル-per-position-tracker-配列")))
+            (should (string= opened-anchor "beacon-pre-1")))
+          (kill-buffer (current-buffer)))
+      (ignore-errors
+        (when (buffer-live-p preview-buffer)
+          (kill-buffer preview-buffer))
+        (when (get-file-buffer source-file)
+          (kill-buffer (get-file-buffer source-file))))
+      (delete-directory tmp-root t))))
+
+(ert-deftest beacon-preview-build-and-refresh-reopens-live-preview-from-blockquote-position ()
+  (let* ((tmp-root (make-temp-file "beacon-preview-ert-" t))
+         (source-file (expand-file-name "sample.md" tmp-root))
+         (beacon-preview-temporary-root (expand-file-name "preview-root" tmp-root))
+         (opened-file nil)
+         (opened-anchor nil)
+         (preview-buffer (generate-new-buffer " *beacon-preview-live*")))
+    (unwind-protect
+        (progn
+          (with-temp-file source-file
+            (insert "## Section\n\n> first quote\n\n> second quote\n"))
+          (find-file source-file)
+          (search-forward "second quote")
+          (beginning-of-line)
+          (setq-local major-mode 'markdown-mode)
+          (let* ((artifacts (beacon-preview-build-current-file))
+                 (html-path (plist-get artifacts :html)))
+            (setq beacon-preview--last-url "file:///dummy")
+            (setq beacon-preview--last-html-path html-path)
+            (setq beacon-preview--xwidget-buffer preview-buffer)
+            (cl-letf (((symbol-function 'beacon-preview--open-preview)
+                       (lambda (file &optional anchor)
+                         (setq opened-file file)
+                         (setq opened-anchor anchor)))
+                      ((symbol-function 'xwidget-webkit-current-session)
+                       (lambda () 'live-session)))
+              (beacon-preview-build-and-refresh))
+            (should (string= opened-file html-path))
+            (should (string= opened-anchor "beacon-blockquote-2")))
+          (kill-buffer (current-buffer)))
+      (ignore-errors
+        (when (buffer-live-p preview-buffer)
+          (kill-buffer preview-buffer))
+        (when (get-file-buffer source-file)
+          (kill-buffer (get-file-buffer source-file))))
+      (delete-directory tmp-root t))))
+
+(ert-deftest beacon-preview-build-and-refresh-reopens-live-preview-from-table-position ()
+  (let* ((tmp-root (make-temp-file "beacon-preview-ert-" t))
+         (source-file (expand-file-name "sample.md" tmp-root))
+         (beacon-preview-temporary-root (expand-file-name "preview-root" tmp-root))
+         (opened-file nil)
+         (opened-anchor nil)
+         (preview-buffer (generate-new-buffer " *beacon-preview-live*")))
+    (unwind-protect
+        (progn
+          (with-temp-file source-file
+            (insert
+             "## Section\n\n"
+             "| A | B |\n"
+             "| --- | --- |\n"
+             "| 1 | 2 |\n\n"
+             "| C | D |\n"
+             "| --- | --- |\n"
+             "| 3 | 4 |\n"))
+          (find-file source-file)
+          (search-forward "| C | D |")
+          (beginning-of-line)
+          (setq-local major-mode 'markdown-mode)
+          (let* ((artifacts (beacon-preview-build-current-file))
+                 (html-path (plist-get artifacts :html)))
+            (setq beacon-preview--last-url "file:///dummy")
+            (setq beacon-preview--last-html-path html-path)
+            (setq beacon-preview--xwidget-buffer preview-buffer)
+            (cl-letf (((symbol-function 'beacon-preview--open-preview)
+                       (lambda (file &optional anchor)
+                         (setq opened-file file)
+                         (setq opened-anchor anchor)))
+                      ((symbol-function 'xwidget-webkit-current-session)
+                       (lambda () 'live-session)))
+              (beacon-preview-build-and-refresh))
+            (should (string= opened-file html-path))
+            (should (string= opened-anchor "beacon-table-2")))
+          (kill-buffer (current-buffer)))
+      (ignore-errors
+        (when (buffer-live-p preview-buffer)
+          (kill-buffer preview-buffer))
+        (when (get-file-buffer source-file)
+          (kill-buffer (get-file-buffer source-file))))
+      (delete-directory tmp-root t))))
+
+(ert-deftest beacon-preview-build-and-refresh-reopens-live-preview-from-list-item-position ()
+  (let* ((tmp-root (make-temp-file "beacon-preview-ert-" t))
+         (source-file (expand-file-name "sample.md" tmp-root))
+         (beacon-preview-temporary-root (expand-file-name "preview-root" tmp-root))
+         (opened-file nil)
+         (opened-anchor nil)
+         (preview-buffer (generate-new-buffer " *beacon-preview-live*")))
+    (unwind-protect
+        (progn
+          (with-temp-file source-file
+            (insert "## Section\n\n- first item\n- second item\n"))
+          (find-file source-file)
+          (search-forward "second item")
+          (beginning-of-line)
+          (setq-local major-mode 'markdown-mode)
+          (let* ((artifacts (beacon-preview-build-current-file))
+                 (html-path (plist-get artifacts :html)))
+            (setq beacon-preview--last-url "file:///dummy")
+            (setq beacon-preview--last-html-path html-path)
+            (setq beacon-preview--xwidget-buffer preview-buffer)
+            (cl-letf (((symbol-function 'beacon-preview--open-preview)
+                       (lambda (file &optional anchor)
+                         (setq opened-file file)
+                         (setq opened-anchor anchor)))
+                      ((symbol-function 'xwidget-webkit-current-session)
+                       (lambda () 'live-session)))
+              (beacon-preview-build-and-refresh))
+            (should (string= opened-file html-path))
+            (should (string= opened-anchor "beacon-li-2")))
+          (kill-buffer (current-buffer)))
+      (ignore-errors
+        (when (buffer-live-p preview-buffer)
+          (kill-buffer preview-buffer))
+        (when (get-file-buffer source-file)
+          (kill-buffer (get-file-buffer source-file))))
+      (delete-directory tmp-root t))))
+
+(ert-deftest beacon-preview-build-and-refresh-reopens-live-preview-from-paragraph-position ()
+  (let* ((tmp-root (make-temp-file "beacon-preview-ert-" t))
+         (source-file (expand-file-name "sample.md" tmp-root))
+         (beacon-preview-temporary-root (expand-file-name "preview-root" tmp-root))
+         (opened-file nil)
+         (opened-anchor nil)
+         (preview-buffer (generate-new-buffer " *beacon-preview-live*")))
+    (unwind-protect
+        (progn
+          (with-temp-file source-file
+            (insert
+             "## Section\n\n"
+             "First paragraph line 1.\n"
+             "Second line same paragraph.\n\n"
+             "Another paragraph.\n"))
+          (find-file source-file)
+          (search-forward "Another paragraph")
+          (beginning-of-line)
+          (setq-local major-mode 'markdown-mode)
+          (let* ((artifacts (beacon-preview-build-current-file))
+                 (html-path (plist-get artifacts :html)))
+            (setq beacon-preview--last-url "file:///dummy")
+            (setq beacon-preview--last-html-path html-path)
+            (setq beacon-preview--xwidget-buffer preview-buffer)
+            (cl-letf (((symbol-function 'beacon-preview--open-preview)
+                       (lambda (file &optional anchor)
+                         (setq opened-file file)
+                         (setq opened-anchor anchor)))
+                      ((symbol-function 'xwidget-webkit-current-session)
+                       (lambda () 'live-session)))
+              (beacon-preview-build-and-refresh))
+            (should (string= opened-file html-path))
+            (should (string= opened-anchor "beacon-p-2")))
           (kill-buffer (current-buffer)))
       (ignore-errors
         (when (buffer-live-p preview-buffer)
@@ -603,6 +1055,44 @@
         (should (eq captured-window 'source-window))
         (should (string-match-p "section" executed))))))
 
+(ert-deftest beacon-preview-jump-to-current-block-prefers-block-anchor ()
+  (with-temp-buffer
+    (setq-local major-mode 'markdown-mode)
+    (let ((jumped-anchor nil))
+      (cl-letf (((symbol-function 'beacon-preview-current-block-anchor)
+                 (lambda () "beacon-pre-1"))
+                ((symbol-function 'beacon-preview-current-heading-anchor)
+                 (lambda () "section"))
+                ((symbol-function 'beacon-preview-jump-to-anchor)
+                 (lambda (anchor)
+                   (setq jumped-anchor anchor))))
+        (beacon-preview-jump-to-current-block)
+        (should (string= jumped-anchor "beacon-pre-1"))))))
+
+(ert-deftest beacon-preview-jump-to-current-block-falls-back-to-heading-anchor ()
+  (with-temp-buffer
+    (setq-local major-mode 'markdown-mode)
+    (let ((jumped-anchor nil))
+      (cl-letf (((symbol-function 'beacon-preview-current-block-anchor)
+                 (lambda () nil))
+                ((symbol-function 'beacon-preview-current-heading-anchor)
+                 (lambda () "section"))
+                ((symbol-function 'beacon-preview-jump-to-anchor)
+                 (lambda (anchor)
+                   (setq jumped-anchor anchor))))
+        (beacon-preview-jump-to-current-block)
+        (should (string= jumped-anchor "section"))))))
+
+(ert-deftest beacon-preview-jump-to-current-block-errors-when-no-anchor-exists ()
+  (with-temp-buffer
+    (setq-local major-mode 'markdown-mode)
+    (cl-letf (((symbol-function 'beacon-preview-current-block-anchor)
+               (lambda () nil))
+              ((symbol-function 'beacon-preview-current-heading-anchor)
+               (lambda () (user-error "No heading"))))
+      (should-error (beacon-preview-jump-to-current-block)
+                    :type 'user-error))))
+
 (ert-deftest beacon-preview-current-session-uses-tracked-preview-buffer ()
   (with-temp-buffer
     (let ((preview-buffer (generate-new-buffer " *beacon-preview-xwidget*")))
@@ -725,6 +1215,63 @@
               (should (eq displayed preview-buffer))))
         (kill-buffer preview-buffer)))))
 
+(ert-deftest beacon-preview-tracks-preview-buffers-per-source-buffer ()
+  (let ((source-a (generate-new-buffer " *beacon-preview-source-a*"))
+        (source-b (generate-new-buffer " *beacon-preview-source-b*"))
+        (preview-a (generate-new-buffer " *beacon-preview-preview-a*"))
+        (preview-b (generate-new-buffer " *beacon-preview-preview-b*"))
+        (displayed nil))
+    (unwind-protect
+        (progn
+          (with-current-buffer source-a
+            (setq-local major-mode 'markdown-mode)
+            (setq-local buffer-file-name "/tmp/a.md")
+            (setq-local beacon-preview--xwidget-buffer preview-a))
+          (with-current-buffer source-b
+            (setq-local major-mode 'markdown-mode)
+            (setq-local buffer-file-name "/tmp/b.md")
+            (setq-local beacon-preview--xwidget-buffer preview-b))
+          (cl-letf (((symbol-function 'display-buffer)
+                     (lambda (buffer &optional _action)
+                       (setq displayed buffer)
+                       (selected-window))))
+            (with-current-buffer source-a
+              (beacon-preview-switch-to-preview)
+              (should (eq displayed preview-a)))
+            (with-current-buffer source-b
+              (beacon-preview-switch-to-preview)
+              (should (eq displayed preview-b)))))
+      (mapc (lambda (buffer)
+              (when (buffer-live-p buffer)
+                (kill-buffer buffer)))
+            (list source-a source-b preview-a preview-b)))))
+
+(ert-deftest beacon-preview-current-session-stays-buffer-local-across-sources ()
+  (let ((source-a (generate-new-buffer " *beacon-preview-session-source-a*"))
+        (source-b (generate-new-buffer " *beacon-preview-session-source-b*"))
+        (preview-a (generate-new-buffer " *beacon-preview-session-preview-a*"))
+        (preview-b (generate-new-buffer " *beacon-preview-session-preview-b*")))
+    (unwind-protect
+        (progn
+          (with-current-buffer source-a
+            (setq-local beacon-preview--xwidget-buffer preview-a))
+          (with-current-buffer source-b
+            (setq-local beacon-preview--xwidget-buffer preview-b))
+          (cl-letf (((symbol-function 'xwidget-webkit-current-session)
+                     (lambda ()
+                       (cond
+                        ((eq (current-buffer) preview-a) 'session-a)
+                        ((eq (current-buffer) preview-b) 'session-b)
+                        (t nil)))))
+            (with-current-buffer source-a
+              (should (eq (beacon-preview--current-session) 'session-a)))
+            (with-current-buffer source-b
+              (should (eq (beacon-preview--current-session) 'session-b)))))
+      (mapc (lambda (buffer)
+              (when (buffer-live-p buffer)
+                (kill-buffer buffer)))
+            (list source-a source-b preview-a preview-b)))))
+
 (ert-deftest beacon-preview-mode-runs-refresh-on-save ()
   (with-temp-buffer
     (setq-local major-mode 'markdown-mode)
@@ -738,17 +1285,179 @@
         (should refresh-called)
         (beacon-preview-mode 0)))))
 
+(ert-deftest beacon-preview-after-save-clears-edited-positions ()
+  (with-temp-buffer
+    (setq-local major-mode 'markdown-mode)
+    (setq-local buffer-file-name "/tmp/sample.md")
+    (setq-local beacon-preview--edited-positions '(10 20))
+    (let ((beacon-preview-auto-refresh-on-save t))
+      (cl-letf (((symbol-function 'beacon-preview-build-and-refresh)
+                 (lambda () nil)))
+        (beacon-preview--after-save)
+        (should-not beacon-preview--edited-positions)))))
+
+(ert-deftest beacon-preview-post-command-schedules-display-follow-on-window-change ()
+  (with-temp-buffer
+    (setq-local major-mode 'markdown-mode)
+    (let ((beacon-preview-follow-window-display-changes t)
+          (beacon-preview--xwidget-buffer (generate-new-buffer " *beacon-preview-live*"))
+          (scheduled nil))
+      (unwind-protect
+          (progn
+            (cl-letf (((symbol-function 'beacon-preview--live-preview-p)
+                       (lambda () t))
+                      ((symbol-function 'beacon-preview--source-window)
+                       (lambda (&optional _buffer) 'source-window))
+                      ((symbol-function 'window-start)
+                       (lambda (_window) 100))
+                      ((symbol-function 'run-with-idle-timer)
+                       (lambda (_delay _repeat fn buffer)
+                         (setq scheduled (list fn buffer))
+                         'timer)))
+              (setq beacon-preview--last-window-start 10)
+              (setq beacon-preview--last-point (point-min))
+              (beacon-preview--post-command)
+              (should scheduled)))
+        (when (buffer-live-p beacon-preview--xwidget-buffer)
+          (kill-buffer beacon-preview--xwidget-buffer))))))
+
+(ert-deftest beacon-preview-post-command-ignores-unchanged-display-state ()
+  (with-temp-buffer
+    (setq-local major-mode 'markdown-mode)
+    (let ((beacon-preview-follow-window-display-changes t)
+          (beacon-preview--xwidget-buffer (generate-new-buffer " *beacon-preview-live*"))
+          (scheduled nil))
+      (unwind-protect
+          (progn
+            (cl-letf (((symbol-function 'beacon-preview--live-preview-p)
+                       (lambda () t))
+                      ((symbol-function 'beacon-preview--source-window)
+                       (lambda (&optional _buffer) 'source-window))
+                      ((symbol-function 'window-start)
+                       (lambda (_window) 10))
+                      ((symbol-function 'run-with-idle-timer)
+                       (lambda (&rest _args)
+                         (setq scheduled t)
+                         'timer)))
+              (setq beacon-preview--last-window-start 10)
+              (setq beacon-preview--last-point (point))
+              (beacon-preview--post-command)
+              (should-not scheduled)))
+        (when (buffer-live-p beacon-preview--xwidget-buffer)
+          (kill-buffer beacon-preview--xwidget-buffer))))))
+
+(ert-deftest beacon-preview-toggle-refresh-jump-behavior-flips-state ()
+  (let ((beacon-preview-refresh-jump-behavior 'block))
+    (beacon-preview-toggle-refresh-jump-behavior)
+    (should (eq beacon-preview-refresh-jump-behavior 'preserve))
+    (beacon-preview-toggle-refresh-jump-behavior)
+    (should (eq beacon-preview-refresh-jump-behavior 'block))))
+
+(ert-deftest beacon-preview-toggle-follow-window-display-changes-flips-state ()
+  (let ((beacon-preview-follow-window-display-changes nil))
+    (beacon-preview-toggle-follow-window-display-changes)
+    (should beacon-preview-follow-window-display-changes)
+    (beacon-preview-toggle-follow-window-display-changes)
+    (should-not beacon-preview-follow-window-display-changes)))
+
+(ert-deftest beacon-preview-mode-runs-refresh-on-revert-with-live-preview ()
+  (with-temp-buffer
+    (setq-local major-mode 'markdown-mode)
+    (setq-local buffer-file-name "/tmp/sample.md")
+    (let ((beacon-preview-auto-refresh-on-revert t)
+          (refresh-called nil))
+      (cl-letf (((symbol-function 'beacon-preview-build-and-refresh)
+                 (lambda () (setq refresh-called t)))
+                ((symbol-function 'beacon-preview--live-preview-p)
+                 (lambda () t)))
+        (beacon-preview-mode 1)
+        (run-hooks 'after-revert-hook)
+        (should refresh-called)
+        (beacon-preview-mode 0)))))
+
+(ert-deftest beacon-preview-mode-skips-refresh-on-revert-without-live-preview ()
+  (with-temp-buffer
+    (setq-local major-mode 'markdown-mode)
+    (setq-local buffer-file-name "/tmp/sample.md")
+    (let ((beacon-preview-auto-refresh-on-revert t)
+          (refresh-called nil))
+      (cl-letf (((symbol-function 'beacon-preview-build-and-refresh)
+                 (lambda () (setq refresh-called t)))
+                ((symbol-function 'beacon-preview--live-preview-p)
+                 (lambda () nil)))
+        (beacon-preview-mode 1)
+        (run-hooks 'after-revert-hook)
+        (should-not refresh-called)
+        (beacon-preview-mode 0)))))
+
+(ert-deftest beacon-preview-mode-skips-refresh-on-revert-when-disabled ()
+  (with-temp-buffer
+    (setq-local major-mode 'markdown-mode)
+    (setq-local buffer-file-name "/tmp/sample.md")
+    (let ((beacon-preview-auto-refresh-on-revert nil)
+          (refresh-called nil))
+      (cl-letf (((symbol-function 'beacon-preview-build-and-refresh)
+                 (lambda () (setq refresh-called t)))
+                ((symbol-function 'beacon-preview--live-preview-p)
+                 (lambda () t)))
+        (beacon-preview-mode 1)
+        (run-hooks 'after-revert-hook)
+        (should-not refresh-called)
+        (beacon-preview-mode 0)))))
+
 (ert-deftest beacon-preview-mode-skips-unsupported-buffers ()
   (with-temp-buffer
     (setq-local major-mode 'text-mode)
     (setq-local buffer-file-name "/tmp/sample.txt")
     (let ((beacon-preview-auto-refresh-on-save t)
+          (beacon-preview-auto-refresh-on-revert t)
           (refresh-called nil))
       (cl-letf (((symbol-function 'beacon-preview-build-and-refresh)
                  (lambda () (setq refresh-called t))))
         (beacon-preview-mode 1)
         (run-hooks 'after-save-hook)
+        (run-hooks 'after-revert-hook)
         (should-not refresh-called)
+        (beacon-preview-mode 0)))))
+
+(ert-deftest beacon-preview-mode-does-not-auto-start-preview-by-default ()
+  (with-temp-buffer
+    (setq-local major-mode 'markdown-mode)
+    (setq-local buffer-file-name "/tmp/sample.md")
+    (let ((beacon-preview-auto-start-on-enable nil)
+          (open-called nil))
+      (cl-letf (((symbol-function 'beacon-preview-build-and-open)
+                 (lambda () (setq open-called t))))
+        (beacon-preview-mode 1)
+        (should-not open-called)
+        (beacon-preview-mode 0)))))
+
+(ert-deftest beacon-preview-mode-can-auto-start-preview-on-enable ()
+  (with-temp-buffer
+    (setq-local major-mode 'markdown-mode)
+    (setq-local buffer-file-name "/tmp/sample.md")
+    (let ((beacon-preview-auto-start-on-enable t)
+          (open-called nil))
+      (cl-letf (((symbol-function 'beacon-preview-build-and-open)
+                 (lambda () (setq open-called t)))
+                ((symbol-function 'beacon-preview--live-preview-p)
+                 (lambda () nil)))
+        (beacon-preview-mode 1)
+        (should open-called)
+        (beacon-preview-mode 0)))))
+
+(ert-deftest beacon-preview-mode-skips-auto-start-when-preview-is-already-live ()
+  (with-temp-buffer
+    (setq-local major-mode 'markdown-mode)
+    (setq-local buffer-file-name "/tmp/sample.md")
+    (let ((beacon-preview-auto-start-on-enable t)
+          (open-called nil))
+      (cl-letf (((symbol-function 'beacon-preview-build-and-open)
+                 (lambda () (setq open-called t)))
+                ((symbol-function 'beacon-preview--live-preview-p)
+                 (lambda () t)))
+        (beacon-preview-mode 1)
+        (should-not open-called)
         (beacon-preview-mode 0)))))
 
 (ert-deftest beacon-preview-mode-installs-keybindings ()
@@ -759,7 +1468,13 @@
   (should (eq (lookup-key beacon-preview-command-map (kbd "d"))
               #'beacon-preview-toggle-debug))
   (should (eq (lookup-key beacon-preview-command-map (kbd "j"))
-              #'beacon-preview-jump-to-current-heading)))
+              #'beacon-preview-jump-to-current-heading))
+  (should (eq (lookup-key beacon-preview-command-map (kbd "b"))
+              #'beacon-preview-jump-to-current-block))
+  (should (eq (lookup-key beacon-preview-command-map (kbd "f"))
+              #'beacon-preview-toggle-refresh-jump-behavior))
+  (should (eq (lookup-key beacon-preview-command-map (kbd "w"))
+              #'beacon-preview-toggle-follow-window-display-changes)))
 
 (ert-deftest beacon-preview-toggle-debug-flips-state ()
   (let ((beacon-preview-debug nil))

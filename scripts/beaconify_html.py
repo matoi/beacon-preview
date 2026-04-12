@@ -72,20 +72,6 @@ def should_instrument(tag: str, attrs: str) -> bool:
     return False
 
 
-def inject_attrs(attrs: str, kind: str, index: int, prefix: str) -> str:
-    beacon_id = f'{prefix}-{kind}-{index}'
-    pieces = [attrs.rstrip()]
-
-    if not ID_RE.search(attrs):
-        pieces.append(f' id="{beacon_id}"')
-    if not DATA_KIND_RE.search(attrs):
-        pieces.append(f' data-beacon-kind="{kind}"')
-    if not DATA_INDEX_RE.search(attrs):
-        pieces.append(f' data-beacon-index="{index}"')
-
-    return "".join(pieces)
-
-
 def first_attr_value(attrs: str, name: str) -> str | None:
     pattern = re.compile(
         rf'\b{name}\s*=\s*(?P<quote>["\'])(?P<value>.*?)(?P=quote)',
@@ -95,13 +81,61 @@ def first_attr_value(attrs: str, name: str) -> str | None:
     return match.group("value") if match else None
 
 
+def upsert_attr(attrs: str, name: str, value: str) -> str:
+    pattern = re.compile(
+        rf'(?P<prefix>\b{name}\s*=\s*)(?P<quote>["\']).*?(?P=quote)',
+        re.IGNORECASE | re.DOTALL,
+    )
+    replacement = f'{name}="{value}"'
+    if pattern.search(attrs):
+        return pattern.sub(replacement, attrs, count=1)
+    return attrs.rstrip() + f' {replacement}'
+
+
+def parse_positive_int(value: str | None) -> int | None:
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except ValueError:
+        return None
+    return parsed if parsed > 0 else None
+
+
+def resolve_beacon_kind(tag: str, attrs: str) -> str:
+    existing_kind = first_attr_value(attrs, "data-beacon-kind")
+    if existing_kind:
+        return existing_kind
+    return tag
+
+
+def resolve_beacon_index(attrs: str, generated_index: int) -> int:
+    existing_index = parse_positive_int(first_attr_value(attrs, "data-beacon-index"))
+    return existing_index or generated_index
+
+
+def inject_attrs(attrs: str, kind: str, index: int, prefix: str) -> str:
+    effective_kind = resolve_beacon_kind(kind, attrs)
+    effective_index = resolve_beacon_index(attrs, index)
+    beacon_id = f'{prefix}-{kind}-{index}'
+    updated = attrs.rstrip()
+
+    if not ID_RE.search(attrs):
+        updated += f' id="{beacon_id}"'
+    updated = upsert_attr(updated, "data-beacon-kind", effective_kind)
+    updated = upsert_attr(updated, "data-beacon-index", str(effective_index))
+    return updated
+
+
 def make_manifest_entry(tag: str, attrs: str, kind: str, index: int, prefix: str) -> dict[str, str | int]:
+    effective_kind = resolve_beacon_kind(kind, attrs)
+    effective_index = resolve_beacon_index(attrs, index)
     existing_id = first_attr_value(attrs, "id")
     anchor_id = existing_id or f"{prefix}-{kind}-{index}"
     return {
         "tag": tag,
-        "kind": kind,
-        "index": index,
+        "kind": effective_kind,
+        "index": effective_index,
         "anchor": anchor_id,
     }
 
@@ -112,6 +146,62 @@ def render_navigation_script(manifest: list[dict[str, str | int]]) -> str:
 <script>
 (function () {{
   const manifest = {manifest_json};
+  const FLASH_CLASS = "beacon-preview-flash";
+  const FLASH_STYLE_ID = "beacon-preview-flash-style";
+  let flashTimer = null;
+  let flashedElement = null;
+
+  function ensureFlashStyle() {{
+    if (document.getElementById(FLASH_STYLE_ID)) {{
+      return;
+    }}
+
+    const style = document.createElement("style");
+    style.id = FLASH_STYLE_ID;
+    style.textContent = [
+      "." + FLASH_CLASS + " {{{{",
+      "  animation: beacon-preview-flash 0.85s ease-out;",
+      "  box-shadow: 0 0 0 3px rgba(255, 196, 0, 0.28);",
+      "  background-color: rgba(255, 235, 120, 0.18);",
+      "  border-radius: 0.2rem;",
+      "}}",
+      "@keyframes beacon-preview-flash {{{{",
+      "  0% {{{{ background-color: rgba(255, 235, 120, 0.38); box-shadow: 0 0 0 4px rgba(255, 196, 0, 0.34); }}}}",
+      "  100% {{{{ background-color: rgba(255, 235, 120, 0); box-shadow: 0 0 0 0 rgba(255, 196, 0, 0); }}}}",
+      "}}}}"
+    ].join("\n");
+    (document.head || document.body || document.documentElement).appendChild(style);
+  }}
+
+  function clearFlash() {{
+    if (flashTimer !== null) {{
+      window.clearTimeout(flashTimer);
+      flashTimer = null;
+    }}
+    if (flashedElement) {{
+      flashedElement.classList.remove(FLASH_CLASS);
+      flashedElement = null;
+    }}
+  }}
+
+  function flashElement(element) {{
+    if (!element) {{
+      return false;
+    }}
+
+    ensureFlashStyle();
+    clearFlash();
+    flashedElement = element;
+    element.classList.add(FLASH_CLASS);
+    flashTimer = window.setTimeout(function () {{
+      if (flashedElement === element) {{
+        element.classList.remove(FLASH_CLASS);
+        flashedElement = null;
+      }}
+      flashTimer = null;
+    }}, 900);
+    return true;
+  }}
 
   function findByAnchor(anchor) {{
     return manifest.find(function (entry) {{
@@ -134,9 +224,40 @@ def render_navigation_script(manifest: list[dict[str, str | int]]) -> str:
     return true;
   }}
 
+  function jumpToElement(element) {{
+    if (!scrollToElement(element)) {{
+      return false;
+    }}
+
+    flashElement(element);
+    return true;
+  }}
+
   function jumpToAnchor(anchor) {{
     const element = document.getElementById(anchor);
-    return scrollToElement(element);
+    return jumpToElement(element);
+  }}
+
+  function isElementVisible(element) {{
+    if (!element) {{
+      return false;
+    }}
+
+    const rect = element.getBoundingClientRect();
+    return rect.bottom > 0 && rect.top < window.innerHeight;
+  }}
+
+  function flashAnchor(anchor) {{
+    const element = document.getElementById(anchor);
+    return flashElement(element);
+  }}
+
+  function flashAnchorIfVisible(anchor) {{
+    const element = document.getElementById(anchor);
+    if (!isElementVisible(element)) {{
+      return false;
+    }}
+    return flashElement(element);
   }}
 
   function jumpToIndex(kind, index) {{
@@ -149,7 +270,11 @@ def render_navigation_script(manifest: list[dict[str, str | int]]) -> str:
     findByAnchor: findByAnchor,
     findByIndex: findByIndex,
     jumpToAnchor: jumpToAnchor,
-    jumpToIndex: jumpToIndex
+    jumpToIndex: jumpToIndex,
+    flashAnchor: flashAnchor,
+    flashAnchorIfVisible: flashAnchorIfVisible,
+    flashElement: flashElement,
+    isElementVisible: isElementVisible
   }};
 }})();
 </script>
