@@ -60,6 +60,7 @@ If you want a ready-to-paste `init.el` example, start with:
          (org-mode . beacon-preview-mode))
   :custom
   (beacon-preview-behavior-style 'default)
+  (beacon-preview-python-command "python3")
   (beacon-preview-display-location 'side-window))
 ```
 
@@ -80,6 +81,7 @@ A slightly more opinionated example for daily use might look like:
   (beacon-preview-behavior-style 'default)
   (beacon-preview-display-location 'side-window)
   (beacon-preview-auto-start-on-enable nil)
+  (beacon-preview-python-command "python3")
   (beacon-preview-pandoc-command "pandoc"))
 ```
 
@@ -91,6 +93,12 @@ If Emacs cannot find the right Pandoc binary through `PATH`, set it explicitly:
 
 ```elisp
 (setq beacon-preview-pandoc-command "/opt/homebrew/bin/pandoc")
+```
+
+Likewise, if you need a specific Python executable, set:
+
+```elisp
+(setq beacon-preview-python-command "/path/to/python3")
 ```
 
 The preview builder script is discovered relative to `beacon-preview.el` by
