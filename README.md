@@ -131,7 +131,9 @@ preview, use:
 This is currently a simple reverse-sync step: it asks the preview for a visible
 beacon block or heading near the viewport center using a lightweight heuristic,
 then moves the source buffer to the corresponding location and roughly mirrors
-the preview's vertical position in the source window.
+the preview's vertical position in the source window. That source jump also
+pushes the previous location onto the mark stack, so you can return with
+`C-u C-SPC`.
 
 By default, that same block/heading-following behavior is used during
 save-triggered refresh, so editing in the middle of a document generally

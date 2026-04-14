@@ -1520,6 +1520,8 @@ similar vertical ratio in the source window."
       (unless position
         (user-error "No source position found for preview %s #%s" kind index))
       (let ((window (beacon-preview--show-source-buffer source-buffer)))
+        (unless (= position (point))
+          (push-mark (point) t))
         (goto-char position)
         (set-window-point window position)
         (if (numberp ratio)

@@ -2,7 +2,10 @@
 
 (require 'ert)
 (require 'cl-lib)
-(load-file "/Users/matoi/Development/beacon-preview/lisp/beacon-preview.el")
+(load-file
+ (expand-file-name "../lisp/beacon-preview.el"
+                   (file-name-directory
+                    (or load-file-name buffer-file-name))))
 
 (ert-deftest beacon-preview-source-temp-directory-is-stable ()
   (let* ((beacon-preview-temporary-root "/tmp/beacon-preview-tests/")
@@ -1230,7 +1233,8 @@
 
 (ert-deftest beacon-preview-sync-source-to-preview-moves-to-visible-markdown-block ()
   (let ((source-buffer (generate-new-buffer " *beacon-preview-source*"))
-        (preview-buffer (generate-new-buffer " *beacon-preview-preview*")))
+        (preview-buffer (generate-new-buffer " *beacon-preview-preview*"))
+        (original-point nil))
     (unwind-protect
         (progn
           (with-current-buffer source-buffer
@@ -1239,7 +1243,8 @@
              "First paragraph.\n\n"
              "Second paragraph.\n")
             (setq-local major-mode 'markdown-mode)
-            (setq-local beacon-preview--xwidget-buffer preview-buffer))
+            (setq-local beacon-preview--xwidget-buffer preview-buffer)
+            (setq original-point (point)))
           (with-current-buffer preview-buffer
             (setq-local major-mode 'xwidget-webkit-mode)
             (setq-local beacon-preview--source-buffer source-buffer))
@@ -1260,7 +1265,10 @@
                          (setq recenter-arg arg))))
               (beacon-preview-sync-source-to-preview)
               (with-current-buffer source-buffer
-                (should (equal (line-number-at-pos (point)) 5)))
+                (should (equal (line-number-at-pos (point)) 5))
+                (should (= (mark t) original-point))
+                (pop-to-mark-command)
+                (should (= (point) original-point)))
               (should (eq (window-buffer (selected-window)) source-buffer))
               (should (integerp recenter-arg))
               (should (> recenter-arg 0)))))
