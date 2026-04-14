@@ -124,16 +124,10 @@ Open a Markdown or Org buffer and run:
 This will:
 
 - generate preview HTML from the current buffer
-- write preview artifacts into an internal temporary directory
 - open the generated HTML in xwidget
-- track the preview buffer for the current source buffer
 
 If no preview exists yet, this command creates one. If a tracked preview already
 exists for the source buffer, later refreshes reuse it.
-
-This also works for Markdown and Org buffers that are not visiting a file yet:
-the current buffer contents are written to an internal temporary snapshot before
-running the preview build.
 
 After that, use:
 
@@ -143,9 +137,7 @@ After that, use:
 
 to move the preview to the current source heading. The jump also tries to
 roughly preserve point's vertical position inside the source window, so the
-target heading does not always land at the very top of the preview. When a
-preview jump succeeds, the destination block is also lightly highlighted so it
-is easier to visually reacquire after the scroll.
+target heading does not always land at the very top of the preview.
 
 For a more block-oriented jump, use:
 
@@ -154,10 +146,7 @@ For a more block-oriented jump, use:
 ```
 
 This prefers the current block when one can be resolved through the manifest,
-and otherwise falls back to the current heading. In Markdown this currently
-covers fenced code blocks, blockquotes, pipe tables, list items, and
-paragraphs. In Org this currently covers source/example blocks, quote blocks,
-tables, list items, and paragraphs.
+and otherwise falls back to the current heading.
 
 If you only want to visually reacquire the current resolved target without
 scrolling the preview, use:
@@ -173,12 +162,8 @@ preview, use:
 (beacon-preview-sync-source-to-preview)
 ```
 
-This is currently a simple reverse-sync step: it asks the preview for a visible
-beacon block or heading near the viewport center using a lightweight heuristic,
-then moves the source buffer to the corresponding location and roughly mirrors
-the preview's vertical position in the source window. That source jump also
-pushes the previous location onto the mark stack, so you can return with
-`C-u C-SPC`.
+That source jump also pushes the previous location onto the mark stack, so you
+can return with `C-u C-SPC`.
 
 By default, that same block/heading-following behavior is used during
 save-triggered refresh, so editing in the middle of a document generally
@@ -221,13 +206,7 @@ If you want all previews to share one dedicated frame instead:
 
 Use `dedicated-frame` when each source buffer should keep its own preview frame,
 or `shared-dedicated-frame` when all previews should rotate through one
-dedicated frame. You can further tune the dedicated frame with
-`beacon-preview-dedicated-frame-parameters`, while
-`beacon-preview-display-buffer-action` continues to control side-window display.
-
-Preview jumps now always try to reflect point's vertical position in the source
-window when enough information is available, so source and preview stay roughly
-aligned during jumps.
+dedicated frame.
 
 If you want to coordinate the main preview-follow settings together, use a
 behavior style instead of setting the individual variables one by one:
@@ -277,14 +256,6 @@ as paging, recentering, or other scroll-induced visible-region updates:
 ```elisp
 (setq beacon-preview-follow-window-display-changes t)
 ```
-
-This follow mode watches source window display changes rather than specific
-commands, so it can react to a broader range of scrolling/recentering actions
-when a live preview is already open.
-
-`beacon-preview-build-and-open` remains an explicit preview-display command, so
-it may still show or reclaim the preview window even when hidden-window reveal
-is disabled.
 
 For the settings most likely to be adjusted while working:
 
@@ -357,11 +328,6 @@ preview too. For example:
 If the source buffer is later renamed, the tracked preview buffer name follows
 that rename as well.
 
-If the source buffer is killed, its tracked preview buffer is closed too so the
-package does not leave behind an orphaned preview with no live source buffer.
-If you kill the preview buffer first, the source buffer forgets that preview and
-any package-managed dedicated preview frame for it is cleaned up too.
-
 Use:
 
 ```elisp
@@ -378,121 +344,3 @@ Use:
 ```
 to toggle that preview display between shown and hidden. If the current source
 buffer does not have a live preview yet, this command starts one first.
-
-## HTML Pipeline
-
-The generated preview HTML contains:
-
-- `id` attributes usable as anchor targets
-- `data-beacon-kind`
-- `data-beacon-index`
-- manifest metadata for editor-side lookup
-- a browser-side `window.BeaconPreview` API
-
-That browser-side API exposes:
-
-- `manifest`
-- `findByAnchor(anchor)`
-- `findByIndex(kind, index)`
-- `jumpToAnchor(anchor)`
-- `jumpToIndex(kind, index)`
-- `flashAnchor(anchor)`
-- `flashAnchorIfVisible(anchor)`
-- `isElementVisible(element)`
-
-## Manifest Contract
-
-The current backend-facing contract is intentionally simple: a builder produces
-preview HTML plus a manifest JSON file that describes useful preview jump
-targets.
-
-Each manifest entry currently uses these fields:
-
-- `kind`: block/heading kind such as `h1`, `p`, `li`, `blockquote`, `pre`, `table`, or `div`
-- `index`: 1-based occurrence count within that `kind`
-- `anchor`: the HTML `id` used for preview jumps
-- `text`: optional human-readable text extracted from the instrumented HTML
-
-Additional fields may appear, but Emacs currently relies mainly on `kind`,
-`index`, `anchor`, and, for heading matching, `text`.
-
-Important contract details:
-
-- `anchor` must refer to a real HTML element id in the generated preview
-- `index` is scoped within a `kind`, not globally across the manifest
-- existing HTML ids may be preserved instead of generating `beacon-*` ids
-- if input HTML already contains `data-beacon-kind` and/or `data-beacon-index`,
-  the instrumented HTML and emitted manifest stay aligned with those values when
-  they are usable; missing pieces may be filled in with generated defaults
-- `text` is optional, but when extractable from the instrumented HTML it is
-  included so editor-side matching can prefer manifest-backed resolution
-- builders may choose how they generate the HTML, as long as they emit HTML and
-  a manifest that follow this contract
-
-When manifest entries are missing or disagree with the current source buffer,
-Emacs falls back rather than failing hard:
-
-- heading lookup falls back to a Pandoc-like slug derived from source text
-- current block jumps fall back to the current heading anchor when no matching
-  block entry is available
-
-## Current Block Resolution
-
-`beacon-preview-jump-to-current-block` and refresh reopen logic currently prefer
-these source-side targets in this order.
-
-For Markdown:
-
-1. fenced code block → `pre`
-2. blockquote → `blockquote`
-3. pipe table → `table`
-4. list item → `li`
-5. paragraph → `p`
-6. fallback to current heading
-
-For Org:
-
-1. source/example block → `pre`
-2. quote block → `blockquote`
-3. table → `table`
-4. list item → `li`
-5. paragraph → `p`
-6. fallback to current heading
-
-This is intentionally source-side heuristic matching rather than exact source
-maps. The current implementation aims for useful block-level preview jumps while
-keeping setup light and save-based.
-
-## Command-Line Usage
-
-Build preview artifacts from a supported source file in one step:
-
-```bash
-python3 scripts/build_preview.py \
-  --input examples/sample.md \
-  --output-dir /tmp/beacon-preview
-```
-
-On success, `build_preview.py` writes exactly two lines to stdout: the absolute
-HTML artifact path first, then the absolute manifest path. It also verifies
-that both artifacts were created before reporting success.
-
-Transform an existing HTML file directly:
-
-```bash
-python3 scripts/beaconify_html.py \
-  --input examples/sample-pandoc.html \
-  --output /tmp/sample-beacon.html \
-  --manifest-output /tmp/sample-beacon.json \
-  --inject-navigation-api
-```
-
-## Notes
-
-- Preview artifacts live under an internal temporary directory during Emacs use.
-- The temporary artifact directory is derived from the source file path, so the
-  user does not have to manage output locations manually.
-- Manifest-backed heading resolution is stronger than manifest-free fallback.
-- Fallback heading matching is designed to be close to Pandoc heading ids.
-- Build failures try to explain whether `python`, `pandoc`, or the generated
-  manifest was the immediate problem.
