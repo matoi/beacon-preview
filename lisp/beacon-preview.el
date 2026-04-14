@@ -67,6 +67,18 @@
   :type 'function
   :group 'beacon-preview-display)
 
+(defcustom beacon-preview-display-location 'side-window
+  "Where `beacon-preview-mode' should show preview buffers.
+
+`side-window' reuses or opens a preview in the current frame using
+`beacon-preview-display-buffer-action'. `dedicated-frame' gives each source
+buffer its own dedicated preview frame. `shared-dedicated-frame' reuses one
+dedicated preview frame for all source buffers."
+  :type '(choice (const :tag "Right side window" side-window)
+                 (const :tag "One frame per preview buffer" dedicated-frame)
+                 (const :tag "One shared preview frame" shared-dedicated-frame))
+  :group 'beacon-preview-display)
+
 (defcustom beacon-preview-python-command "python3"
   "Python executable used to run the preview builder script."
   :type 'string
@@ -92,8 +104,19 @@
   "Display action used for xwidget preview buffers.
 
 The default reuses an existing preview window when possible and otherwise
-opens the preview in a right side window without replacing the editing buffer."
+opens the preview in a right side window without replacing the editing buffer.
+
+This setting is used when `beacon-preview-display-location' is `side-window'."
   :type 'sexp
+  :group 'beacon-preview-display)
+
+(defcustom beacon-preview-dedicated-frame-parameters
+  '((name . "beacon-preview"))
+  "Frame parameters used when opening a preview in a dedicated frame.
+
+This setting is used when `beacon-preview-display-location' is
+`dedicated-frame'."
+  :type 'alist
   :group 'beacon-preview-display)
 
 (defcustom beacon-preview-temporary-root
@@ -130,17 +153,6 @@ live. The default is nil so preview startup remains opt-in.
 This option is available from `M-x customize-group RET beacon-preview RET'."
   :type 'boolean
   :group 'beacon-preview-automation)
-
-(defvar beacon-preview-follow-current-heading-on-refresh t
-  "Obsolete compatibility variable retained for older user configuration.
-
-Source-correlated target resolution is now always enabled for supported source
-buffers, so this variable is ignored.")
-
-(make-obsolete-variable
- 'beacon-preview-follow-current-heading-on-refresh
- "source-correlated target resolution is always enabled"
- "1.0.25")
 
 (defcustom beacon-preview-refresh-jump-behavior 'block
   "How live preview refresh should treat preview position.
@@ -310,18 +322,6 @@ You can use a named preset such as `default', `live', `visible',
   :type 'number
   :group 'beacon-preview-display)
 
-(defvar beacon-preview-follow-window-position t
-  "Obsolete compatibility variable retained for older user configuration.
-
-Preview jumps now always try to reflect point's vertical position in the source
-window when enough source-window information is available, so this variable is
-ignored.")
-
-(make-obsolete-variable
- 'beacon-preview-follow-window-position
- "preview jumps now always follow source window position"
- "1.0.25")
-
 (defcustom beacon-preview-post-open-sync-delay 0.05
   "Delay in seconds before applying a post-open preview position sync."
   :type 'number
@@ -357,6 +357,12 @@ ignored.")
 (defvar-local beacon-preview--xwidget-buffer nil
   "Buffer showing the beacon preview via xwidget for the current source buffer.")
 
+(defvar-local beacon-preview--preview-frame nil
+  "Dedicated frame associated with the current source buffer's preview.")
+
+(defvar beacon-preview--shared-preview-frame nil
+  "Dedicated frame shared across all source buffers when configured.")
+
 (defvar-local beacon-preview--source-buffer nil
   "Source buffer associated with a preview buffer.")
 
@@ -386,6 +392,7 @@ ignored.")
     (define-key map (kbd "o") #'beacon-preview-build-and-open)
     (define-key map (kbd "r") #'beacon-preview-build-and-refresh)
     (define-key map (kbd "s") #'beacon-preview-apply-behavior-style)
+    (define-key map (kbd "p") #'beacon-preview-sync-source-to-preview)
     (define-key map (kbd "j") #'beacon-preview-jump-to-current-heading)
     (define-key map (kbd "b") #'beacon-preview-jump-to-current-block)
     (define-key map (kbd "a") #'beacon-preview-jump-to-anchor)
@@ -1727,9 +1734,50 @@ next block."
       (setq beacon-preview--source-buffer source-buffer)
       (rename-buffer (beacon-preview--preview-buffer-name source-buffer) t))))
 
+(defun beacon-preview--dedicated-frame-parameters ()
+  "Return frame parameters for a dedicated beacon preview frame."
+  (append beacon-preview-dedicated-frame-parameters
+          '((beacon-preview-dedicated . t))))
+
+(defun beacon-preview--live-preview-frame (&optional source-buffer)
+  "Return the live dedicated preview frame configured for SOURCE-BUFFER, or nil."
+  (pcase beacon-preview-display-location
+    ('shared-dedicated-frame
+     (when (frame-live-p beacon-preview--shared-preview-frame)
+       beacon-preview--shared-preview-frame))
+    (_
+     (when-let ((buffer (or source-buffer (current-buffer))))
+       (with-current-buffer buffer
+         (when (frame-live-p beacon-preview--preview-frame)
+           beacon-preview--preview-frame))))))
+
+(defun beacon-preview--remember-preview-frame (source-buffer frame)
+  "Record FRAME as SOURCE-BUFFER's dedicated preview frame."
+  (when (frame-live-p frame)
+    (if (eq beacon-preview-display-location 'shared-dedicated-frame)
+        (setq beacon-preview--shared-preview-frame frame)
+      (when (buffer-live-p source-buffer)
+        (with-current-buffer source-buffer
+          (setq beacon-preview--preview-frame frame))))))
+
+(defun beacon-preview--show-preview-buffer-in-dedicated-frame (preview-buffer)
+  "Display PREVIEW-BUFFER in the current source buffer's dedicated preview frame."
+  (or (get-buffer-window preview-buffer t)
+      (let* ((source-buffer (current-buffer))
+             (frame (or (beacon-preview--live-preview-frame source-buffer)
+                        (make-frame (beacon-preview--dedicated-frame-parameters))))
+             (window (frame-root-window frame)))
+        (beacon-preview--remember-preview-frame source-buffer frame)
+        (set-window-buffer window preview-buffer)
+        window)))
+
 (defun beacon-preview--show-preview-buffer (preview-buffer)
   "Display PREVIEW-BUFFER in a user-visible window."
-  (display-buffer preview-buffer beacon-preview-display-buffer-action))
+  (pcase beacon-preview-display-location
+    ((or 'dedicated-frame 'shared-dedicated-frame)
+     (beacon-preview--show-preview-buffer-in-dedicated-frame preview-buffer))
+    (_
+     (display-buffer preview-buffer beacon-preview-display-buffer-action))))
 
 (defun beacon-preview--tracked-preview-window (&optional preview-buffer)
   "Return a live window already showing PREVIEW-BUFFER, or nil."
@@ -1741,7 +1789,7 @@ next block."
 
 EXPLICIT is non-nil for commands that intentionally display the preview window.
 Source-driven updates honor `beacon-preview-reveal-hidden-preview-window' and
-avoid reclaiming a side window that is currently showing another buffer."
+avoid reclaiming a preview display that is currently showing another buffer."
   (or explicit
       beacon-preview-reveal-hidden-preview-window
       (not (buffer-live-p preview-buffer))

@@ -144,6 +144,24 @@ If you want to refresh manually, use:
 (beacon-preview-build-and-refresh)
 ```
 
+If you prefer the preview in its own frame instead of a side window, use:
+
+```elisp
+(setq beacon-preview-display-location 'dedicated-frame)
+```
+
+If you want all previews to share one dedicated frame instead:
+
+```elisp
+(setq beacon-preview-display-location 'shared-dedicated-frame)
+```
+
+Use `dedicated-frame` when each source buffer should keep its own preview frame,
+or `shared-dedicated-frame` when all previews should rotate through one
+dedicated frame. You can further tune the dedicated frame with
+`beacon-preview-dedicated-frame-parameters`, while
+`beacon-preview-display-buffer-action` continues to control side-window display.
+
 Preview jumps now always try to reflect point's vertical position in the source
 window when enough information is available, so source and preview stay roughly
 aligned during jumps.
@@ -209,6 +227,7 @@ For the settings most likely to be adjusted while working:
 
 | Concern | Persistent variable | Runtime command |
 | --- | --- | --- |
+| Preview opens in side window, per-preview frame, or shared frame | `beacon-preview-display-location` | — |
 | Coordinated behavior preset | `beacon-preview-behavior-style` | `M-x beacon-preview-apply-behavior-style` |
 | Refresh follows current source block vs preserves preview scroll | `beacon-preview-refresh-jump-behavior` | `M-x beacon-preview-toggle-refresh-jump-behavior` |
 | Live preview follows source window scrolling/recentering | `beacon-preview-follow-window-display-changes` | `M-x beacon-preview-toggle-follow-window-display-changes` |
@@ -248,6 +267,7 @@ automatically start preview unless you opt in.
 - `C-c C-b o` for `beacon-preview-build-and-open`
 - `C-c C-b r` for `beacon-preview-build-and-refresh`
 - `C-c C-b s` for `beacon-preview-apply-behavior-style`
+- `C-c C-b p` for `beacon-preview-sync-source-to-preview`
 - `C-c C-b j` for `beacon-preview-jump-to-current-heading`
 - `C-c C-b b` for `beacon-preview-jump-to-current-block`
 - `C-c C-b a` for `beacon-preview-jump-to-anchor`
