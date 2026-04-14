@@ -85,10 +85,6 @@ A slightly more opinionated example for daily use might look like:
   (beacon-preview-pandoc-command "pandoc"))
 ```
 
-`beacon-preview` is intentionally xwidget-only. If Emacs was built without
-xwidgets, or if you run it outside a graphical session, preview commands fail
-with an explanatory error instead of a low-level `void-function` style error.
-
 If Emacs cannot find the right Pandoc binary through `PATH`, set it explicitly:
 
 ```elisp
@@ -101,9 +97,6 @@ Likewise, if you need a specific Python executable, set:
 (setq beacon-preview-python-command "/path/to/python3")
 ```
 
-The preview builder script is discovered relative to `beacon-preview.el` by
-default, so a checkout-specific absolute path is no longer required.
-
 Most behavior knobs are available from:
 
 ```elisp
@@ -111,7 +104,7 @@ M-x customize-group RET beacon-preview RET
 ```
 
 They are grouped under **Build**, **Automation**, **Navigation**, **Display**,
-and **Debugging** subgroups so the growing set of toggles is easier to scan.
+and **Debugging** subgroups.
 
 ## Basic Workflow
 
@@ -145,8 +138,8 @@ For a more block-oriented jump, use:
 (beacon-preview-jump-to-current-block)
 ```
 
-This prefers the current block when one can be resolved through the manifest,
-and otherwise falls back to the current heading.
+This prefers the current block when one can be identified reliably, and
+otherwise falls back to the current heading.
 
 If you only want to visually reacquire the current resolved target without
 scrolling the preview, use:
