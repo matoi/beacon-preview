@@ -1,19 +1,14 @@
 # beacon-preview
 
-`beacon-preview` is a Pandoc-based preview workflow for Markdown that makes the
-generated HTML easy to navigate from Emacs.
-
-This file is the primary **user-facing** reference for setup, commands,
-configuration, and the current stable contract expected by the repository.
-If you need the actively evolving implementation status or next-session notes,
-see `docs/markdown-preview-handoff.md`.
+`beacon-preview` is a Pandoc-based preview workflow for Markdown and Org that
+makes generated HTML easy to navigate from Emacs.
 
 It focuses on:
 
 - generating local HTML artifacts with Pandoc
 - adding beacon markers to headings and block-level elements
 - opening the result in Emacs xwidget
-- jumping the preview to useful locations from the source buffer
+- jumping or flashing the preview at useful locations from the source buffer
 
 ## Requirements
 
@@ -30,16 +25,13 @@ It focuses on:
 
 ## Emacs Setup
 
-For day-to-day use, treat the setup and command descriptions in this README as
-authoritative. Development-session priorities and open implementation questions
-live in `docs/markdown-preview-handoff.md`.
-
-Load the mode and enable it for Markdown buffers:
+Load the mode and enable it for Markdown and Org buffers:
 
 ```elisp
 (load-file "/Users/matoi/Development/beacon-preview/lisp/beacon-preview.el")
 (add-hook 'markdown-mode-hook #'beacon-preview-mode)
 (add-hook 'gfm-mode-hook #'beacon-preview-mode)
+(add-hook 'org-mode-hook #'beacon-preview-mode)
 ```
 
 `beacon-preview` is intentionally xwidget-only. If Emacs was built without
@@ -61,9 +53,12 @@ Most behavior knobs are available from:
 M-x customize-group RET beacon-preview RET
 ```
 
+They are grouped under **Build**, **Automation**, **Navigation**, **Display**,
+and **Debugging** subgroups so the growing set of toggles is easier to scan.
+
 ## Basic Workflow
 
-Open a Markdown buffer and run:
+Open a Markdown or Org buffer and run:
 
 ```elisp
 (beacon-preview-build-and-open)
@@ -85,7 +80,7 @@ After that, use:
 (beacon-preview-jump-to-current-heading)
 ```
 
-to move the preview to the current Markdown heading. The jump also tries to
+to move the preview to the current source heading. The jump also tries to
 roughly preserve point's vertical position inside the source window, so the
 target heading does not always land at the very top of the preview. When a
 preview jump succeeds, the destination block is also lightly highlighted so it
@@ -97,9 +92,30 @@ For a more block-oriented jump, use:
 (beacon-preview-jump-to-current-block)
 ```
 
-This prefers the current fenced code block, blockquote, pipe table, list item,
-or paragraph when one can be resolved through the manifest, and otherwise falls
-back to the current heading.
+This prefers the current block when one can be resolved through the manifest,
+and otherwise falls back to the current heading. In Markdown this currently
+covers fenced code blocks, blockquotes, pipe tables, list items, and
+paragraphs. In Org this currently covers source/example blocks, quote blocks,
+tables, list items, and paragraphs.
+
+If you only want to visually reacquire the current resolved target without
+scrolling the preview, use:
+
+```elisp
+(beacon-preview-flash-current-target)
+```
+
+If you want to pull the source buffer toward the block currently visible in the
+preview, use:
+
+```elisp
+(beacon-preview-sync-source-to-preview)
+```
+
+This is currently a simple reverse-sync step: it asks the preview for a visible
+beacon block or heading near the viewport center using a lightweight heuristic,
+then moves the source buffer to the corresponding location and roughly mirrors
+the preview's vertical position in the source window.
 
 By default, that same block/heading-following behavior is used during
 save-triggered refresh, so editing in the middle of a document generally
@@ -112,16 +128,48 @@ position, switch refresh behavior to `preserve` as described below.
 When `beacon-preview-mode` is enabled, saving the buffer rebuilds preview
 artifacts and refreshes the tracked preview automatically.
 
+By default, these source-driven refreshes do **not** reclaim a preview side
+window that is currently showing some other buffer. This avoids unexpectedly
+pulling the preview back to the foreground when you intentionally reused that
+window for another task. If you want source-driven updates to reveal that
+hidden preview window again, enable:
+
+```elisp
+(setq beacon-preview-reveal-hidden-preview-window t)
+```
+
 If you want to refresh manually, use:
 
 ```elisp
 (beacon-preview-build-and-refresh)
 ```
 
-If you prefer jumps without that window-position offset, disable it with:
+Preview jumps now always try to reflect point's vertical position in the source
+window when enough information is available, so source and preview stay roughly
+aligned during jumps.
+
+If you want to coordinate the main preview-follow settings together, use a
+behavior style instead of setting the individual variables one by one:
 
 ```elisp
-(setq beacon-preview-follow-window-position nil)
+(beacon-preview-apply-behavior-style 'default)
+```
+
+Available named styles are:
+
+- `default`
+- `live`
+- `visible`
+- `live-visible`
+- `preserve`
+
+You can also use a custom style plist when you want one explicit bundle:
+
+```elisp
+(beacon-preview-apply-behavior-style
+ '(:refresh-jump-behavior preserve
+   :follow-window-display-changes t
+   :reveal-hidden-preview-window nil))
 ```
 
 If you prefer manual refresh only:
@@ -153,35 +201,45 @@ This follow mode watches source window display changes rather than specific
 commands, so it can react to a broader range of scrolling/recentering actions
 when a live preview is already open.
 
-For runtime toggles while working, these commands are available:
+`beacon-preview-build-and-open` remains an explicit preview-display command, so
+it may still show or reclaim the preview window even when hidden-window reveal
+is disabled.
 
-- `M-x beacon-preview-toggle-refresh-jump-behavior`
-- `M-x beacon-preview-toggle-follow-window-display-changes`
-- `M-x beacon-preview-toggle-debug`
+For the settings most likely to be adjusted while working:
+
+| Concern | Persistent variable | Runtime command |
+| --- | --- | --- |
+| Coordinated behavior preset | `beacon-preview-behavior-style` | `M-x beacon-preview-apply-behavior-style` |
+| Refresh follows current source block vs preserves preview scroll | `beacon-preview-refresh-jump-behavior` | `M-x beacon-preview-toggle-refresh-jump-behavior` |
+| Live preview follows source window scrolling/recentering | `beacon-preview-follow-window-display-changes` | `M-x beacon-preview-toggle-follow-window-display-changes` |
+| Source-driven refresh may reveal a hidden preview window | `beacon-preview-reveal-hidden-preview-window` | `M-x beacon-preview-toggle-reveal-hidden-preview-window` |
 
 If you want `beacon-preview-mode` to open the preview automatically when enabled
-in a Markdown buffer:
+in a supported source buffer:
 
 ```elisp
 (setq beacon-preview-auto-start-on-enable t)
 ```
 
-By default this is disabled, so opening a `.md` file does not automatically
-start preview unless you opt in.
+By default this is disabled, so opening a `.md` or `.org` file does not
+automatically start preview unless you opt in.
 
 ## Useful Commands
 
 - `M-x beacon-preview-mode`
 - `M-x beacon-preview-build-and-open`
 - `M-x beacon-preview-build-and-refresh`
+- `M-x beacon-preview-apply-behavior-style`
 - `M-x beacon-preview-switch-to-preview`
 - `M-x beacon-preview-jump-to-current-heading`
 - `M-x beacon-preview-jump-to-current-block`
 - `M-x beacon-preview-jump-to-anchor`
+- `M-x beacon-preview-flash-current-target`
+- `M-x beacon-preview-sync-source-to-preview`
 - `M-x beacon-preview-reload`
 - `M-x beacon-preview-toggle-refresh-jump-behavior`
 - `M-x beacon-preview-toggle-follow-window-display-changes`
-- `M-x beacon-preview-toggle-debug`
+- `M-x beacon-preview-toggle-reveal-hidden-preview-window`
 
 ## Key Bindings
 
@@ -189,12 +247,14 @@ start preview unless you opt in.
 
 - `C-c C-b o` for `beacon-preview-build-and-open`
 - `C-c C-b r` for `beacon-preview-build-and-refresh`
+- `C-c C-b s` for `beacon-preview-apply-behavior-style`
 - `C-c C-b j` for `beacon-preview-jump-to-current-heading`
 - `C-c C-b b` for `beacon-preview-jump-to-current-block`
 - `C-c C-b a` for `beacon-preview-jump-to-anchor`
+- `C-c C-b h` for `beacon-preview-flash-current-target`
 - `C-c C-b f` for `beacon-preview-toggle-refresh-jump-behavior`
 - `C-c C-b w` for `beacon-preview-toggle-follow-window-display-changes`
-- `C-c C-b d` for `beacon-preview-toggle-debug`
+- `C-c C-b v` for `beacon-preview-toggle-reveal-hidden-preview-window`
 
 ## Preview Buffers
 
@@ -209,7 +269,6 @@ Use:
 ```elisp
 (beacon-preview-switch-to-preview)
 ```
-
 to jump back to the tracked preview for the current source buffer.
 
 ## HTML Pipeline
@@ -272,11 +331,22 @@ Emacs falls back rather than failing hard:
 ## Current Block Resolution
 
 `beacon-preview-jump-to-current-block` and refresh reopen logic currently prefer
-these source-side targets in this order:
+these source-side targets in this order.
+
+For Markdown:
 
 1. fenced code block → `pre`
 2. blockquote → `blockquote`
 3. pipe table → `table`
+4. list item → `li`
+5. paragraph → `p`
+6. fallback to current heading
+
+For Org:
+
+1. source/example block → `pre`
+2. quote block → `blockquote`
+3. table → `table`
 4. list item → `li`
 5. paragraph → `p`
 6. fallback to current heading
@@ -287,7 +357,7 @@ keeping setup light and save-based.
 
 ## Command-Line Usage
 
-Build preview artifacts from Markdown in one step:
+Build preview artifacts from a supported source file in one step:
 
 ```bash
 python3 scripts/build_preview.py \

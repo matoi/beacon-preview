@@ -28,6 +28,26 @@
   :group 'tools
   :prefix "beacon-preview-")
 
+(defgroup beacon-preview-build nil
+  "Build and external tool settings for beacon preview."
+  :group 'beacon-preview)
+
+(defgroup beacon-preview-automation nil
+  "Automatic preview lifecycle settings for beacon preview."
+  :group 'beacon-preview)
+
+(defgroup beacon-preview-navigation nil
+  "Source-to-preview navigation settings for beacon preview."
+  :group 'beacon-preview)
+
+(defgroup beacon-preview-display nil
+  "Preview window and display-follow settings for beacon preview."
+  :group 'beacon-preview)
+
+(defgroup beacon-preview-debugging nil
+  "Debugging settings for beacon preview."
+  :group 'beacon-preview)
+
 (defun beacon-preview--library-directory ()
   "Return the directory containing beacon-preview.el, or nil."
   (let ((library-file (or load-file-name
@@ -44,20 +64,24 @@
 
 (defcustom beacon-preview-open-function #'xwidget-webkit-browse-url
   "Function used to open a generated preview URL in a new xwidget session."
-  :type 'function)
+  :type 'function
+  :group 'beacon-preview-display)
 
 (defcustom beacon-preview-python-command "python3"
   "Python executable used to run the preview builder script."
-  :type 'string)
+  :type 'string
+  :group 'beacon-preview-build)
 
 (defcustom beacon-preview-pandoc-command "pandoc"
   "Pandoc executable used by the preview builder script."
-  :type 'string)
+  :type 'string
+  :group 'beacon-preview-build)
 
 (defcustom beacon-preview-builder-script
   (beacon-preview--default-builder-script)
   "Path to the build_preview.py script."
-  :type 'file)
+  :type 'file
+  :group 'beacon-preview-build)
 
 (defcustom beacon-preview-display-buffer-action
   '((display-buffer-reuse-window display-buffer-in-side-window)
@@ -69,27 +93,32 @@
 
 The default reuses an existing preview window when possible and otherwise
 opens the preview in a right side window without replacing the editing buffer."
-  :type 'sexp)
+  :type 'sexp
+  :group 'beacon-preview-display)
 
 (defcustom beacon-preview-temporary-root
   (expand-file-name "beacon-preview/" temporary-file-directory)
   "Root directory for internally managed temporary preview artifacts."
-  :type 'directory)
+  :type 'directory
+  :group 'beacon-preview-build)
 
-(defcustom beacon-preview-source-modes '(markdown-mode gfm-mode)
-  "Major modes where source-side heading helpers should be offered."
-  :type '(repeat symbol))
+(defcustom beacon-preview-source-modes '(markdown-mode gfm-mode org-mode)
+  "Major modes where source-side preview helpers should be offered."
+  :type '(repeat symbol)
+  :group 'beacon-preview-automation)
 
 (defcustom beacon-preview-auto-refresh-on-save t
   "Whether `beacon-preview-mode' should refresh preview artifacts on save."
-  :type 'boolean)
+  :type 'boolean
+  :group 'beacon-preview-automation)
 
 (defcustom beacon-preview-auto-refresh-on-revert t
   "Whether `beacon-preview-mode' should refresh preview artifacts after revert.
 
 This covers cases such as external file changes being pulled into the current
 buffer via `revert-buffer' or `auto-revert-mode'."
-  :type 'boolean)
+  :type 'boolean
+  :group 'beacon-preview-automation)
 
 (defcustom beacon-preview-auto-start-on-enable nil
   "Whether enabling `beacon-preview-mode' should automatically open a preview.
@@ -99,11 +128,19 @@ buffer builds preview artifacts and opens the preview unless one is already
 live. The default is nil so preview startup remains opt-in.
 
 This option is available from `M-x customize-group RET beacon-preview RET'."
-  :type 'boolean)
+  :type 'boolean
+  :group 'beacon-preview-automation)
 
-(defcustom beacon-preview-follow-current-heading-on-refresh t
-  "Whether refresh commands should reopen the preview at the current heading."
-  :type 'boolean)
+(defvar beacon-preview-follow-current-heading-on-refresh t
+  "Obsolete compatibility variable retained for older user configuration.
+
+Source-correlated target resolution is now always enabled for supported source
+buffers, so this variable is ignored.")
+
+(make-obsolete-variable
+ 'beacon-preview-follow-current-heading-on-refresh
+ "source-correlated target resolution is always enabled"
+ "1.0.25")
 
 (defcustom beacon-preview-refresh-jump-behavior 'block
   "How live preview refresh should treat preview position.
@@ -112,38 +149,198 @@ When set to `block', refresh follows the current source block or heading as
 usual. When set to `preserve', refresh rebuilds and reloads the preview while
 keeping the current preview scroll position when possible."
   :type '(choice (const :tag "Follow current block" block)
-                 (const :tag "Preserve preview position" preserve)))
+                 (const :tag "Preserve preview position" preserve))
+  :group 'beacon-preview-navigation)
 
 (defcustom beacon-preview-follow-window-display-changes nil
   "Whether live preview should follow source window display-position changes.
 
 When non-nil, changes in the source window's visible region trigger a debounced
 preview sync for an existing live preview."
-  :type 'boolean)
+  :type 'boolean
+  :group 'beacon-preview-display)
+
+(defcustom beacon-preview-reveal-hidden-preview-window nil
+  "Whether source-driven preview updates may foreground a hidden preview window.
+
+When nil, actions such as refresh reuse a tracked preview buffer only when that
+preview is already visible or can be updated without reclaiming a side window
+that is currently showing another buffer. Explicit preview-display commands such
+as `beacon-preview-build-and-open' still show the preview window normally."
+  :type 'boolean
+  :group 'beacon-preview-display)
+
+(defconst beacon-preview--behavior-style-presets
+  '((default
+     :refresh-jump-behavior block
+     :follow-window-display-changes nil
+     :reveal-hidden-preview-window nil)
+    (live
+     :refresh-jump-behavior block
+     :follow-window-display-changes t
+     :reveal-hidden-preview-window nil)
+    (visible
+     :refresh-jump-behavior block
+     :follow-window-display-changes nil
+     :reveal-hidden-preview-window t)
+    (live-visible
+     :refresh-jump-behavior block
+     :follow-window-display-changes t
+     :reveal-hidden-preview-window t)
+    (preserve
+     :refresh-jump-behavior preserve
+     :follow-window-display-changes nil
+     :reveal-hidden-preview-window nil))
+  "Named behavior style presets for beacon preview.")
+
+(defvar beacon-preview--applying-behavior-style nil
+  "Non-nil while a beacon preview behavior style is being applied.")
+
+(defun beacon-preview--behavior-style-spec-p (style)
+  "Return non-nil when STYLE is a valid beacon preview behavior style spec."
+  (and (listp style)
+       (plist-member style :refresh-jump-behavior)
+       (plist-member style :follow-window-display-changes)
+       (plist-member style :reveal-hidden-preview-window)
+       (memq (plist-get style :refresh-jump-behavior) '(block preserve))
+       (booleanp (plist-get style :follow-window-display-changes))
+       (booleanp (plist-get style :reveal-hidden-preview-window))))
+
+(defun beacon-preview--behavior-style-spec (style)
+  "Return normalized behavior style plist for STYLE or signal an error."
+  (cond
+   ((symbolp style)
+    (or (cdr (assq style beacon-preview--behavior-style-presets))
+        (user-error "Unknown beacon preview behavior style: %S" style)))
+   ((beacon-preview--behavior-style-spec-p style)
+    style)
+   (t
+    (user-error "Invalid beacon preview behavior style: %S" style))))
+
+(defun beacon-preview--current-behavior-style-spec ()
+  "Return current behavior settings as a normalized style plist."
+  (list :refresh-jump-behavior beacon-preview-refresh-jump-behavior
+        :follow-window-display-changes beacon-preview-follow-window-display-changes
+        :reveal-hidden-preview-window beacon-preview-reveal-hidden-preview-window))
+
+(defun beacon-preview--behavior-style-value (style)
+  "Return canonical style value for STYLE.
+
+Known presets are returned as their symbol names; other valid styles are
+returned as normalized plists."
+  (let ((spec (beacon-preview--behavior-style-spec style)))
+    (or (car
+         (seq-find
+          (lambda (entry)
+            (equal spec (cdr entry)))
+          beacon-preview--behavior-style-presets))
+        spec)))
+
+(defun beacon-preview--set-behavior-style (style)
+  "Apply behavior STYLE to the coordinated preview behavior settings."
+  (let ((spec (beacon-preview--behavior-style-spec style)))
+    (let ((beacon-preview--applying-behavior-style t))
+      (setq beacon-preview-refresh-jump-behavior
+            (plist-get spec :refresh-jump-behavior))
+      (setq beacon-preview-follow-window-display-changes
+            (plist-get spec :follow-window-display-changes))
+      (setq beacon-preview-reveal-hidden-preview-window
+            (plist-get spec :reveal-hidden-preview-window)))
+    (setq beacon-preview-behavior-style
+          (beacon-preview--behavior-style-value spec))))
+
+(defun beacon-preview--behavior-style-setter (symbol value)
+  "Custom setter for SYMBOL using behavior style VALUE."
+  (set-default symbol (beacon-preview--behavior-style-value value))
+  (unless beacon-preview--applying-behavior-style
+    (beacon-preview--set-behavior-style value)))
+
+(defun beacon-preview--sync-behavior-style ()
+  "Update `beacon-preview-behavior-style' to match current behavior settings."
+  (unless beacon-preview--applying-behavior-style
+    (setq beacon-preview-behavior-style
+          (beacon-preview--behavior-style-value
+           (beacon-preview--current-behavior-style-spec)))))
+
+(defun beacon-preview-apply-behavior-style (style)
+  "Apply beacon preview behavior STYLE.
+
+STYLE may be one of the named presets `default', `live', `visible',
+`live-visible', or `preserve', or an explicit plist accepted by
+`beacon-preview-behavior-style'."
+  (interactive
+   (list
+    (intern
+     (completing-read
+      "Behavior style: "
+      '("default" "live" "visible" "live-visible" "preserve")
+      nil
+      t))))
+  (beacon-preview--set-behavior-style style)
+  (message "[beacon-preview] behavior style: %S"
+           beacon-preview-behavior-style))
+
+(defcustom beacon-preview-behavior-style 'default
+  "High-level style that sets coordinated preview behavior in one place.
+
+This controls these variables together:
+
+- `beacon-preview-refresh-jump-behavior'
+- `beacon-preview-follow-window-display-changes'
+- `beacon-preview-reveal-hidden-preview-window'
+
+You can use a named preset such as `default', `live', `visible',
+`live-visible', or `preserve'. You can also provide an explicit plist style:
+
+  (:refresh-jump-behavior preserve
+   :follow-window-display-changes t
+   :reveal-hidden-preview-window nil)"
+  :type '(choice
+          (const :tag "Default" default)
+          (const :tag "Live follow" live)
+          (const :tag "Visible preview" visible)
+          (const :tag "Live follow + visible preview" live-visible)
+          (const :tag "Preserve preview position" preserve)
+          (sexp :tag "Custom style plist"))
+  :set #'beacon-preview--behavior-style-setter
+  :group 'beacon-preview)
 
 (defcustom beacon-preview-display-follow-delay 0.05
   "Idle delay in seconds before syncing preview after source display changes."
-  :type 'number)
+  :type 'number
+  :group 'beacon-preview-display)
 
-(defcustom beacon-preview-follow-window-position t
-  "Whether preview jumps should roughly match point's vertical position in the source window."
-  :type 'boolean)
+(defvar beacon-preview-follow-window-position t
+  "Obsolete compatibility variable retained for older user configuration.
+
+Preview jumps now always try to reflect point's vertical position in the source
+window when enough source-window information is available, so this variable is
+ignored.")
+
+(make-obsolete-variable
+ 'beacon-preview-follow-window-position
+ "preview jumps now always follow source window position"
+ "1.0.25")
 
 (defcustom beacon-preview-post-open-sync-delay 0.05
   "Delay in seconds before applying a post-open preview position sync."
-  :type 'number)
+  :type 'number
+  :group 'beacon-preview-display)
 
 (defcustom beacon-preview-jump-retry-count 20
   "How many times the browser-side jump script should retry before giving up."
-  :type 'integer)
+  :type 'integer
+  :group 'beacon-preview-navigation)
 
 (defcustom beacon-preview-jump-retry-delay-ms 50
   "Delay in milliseconds between browser-side jump retries."
-  :type 'integer)
+  :type 'integer
+  :group 'beacon-preview-navigation)
 
 (defcustom beacon-preview-debug nil
   "Whether beacon preview should emit debug messages to `*Messages*'."
-  :type 'boolean)
+  :type 'boolean
+  :group 'beacon-preview-debugging)
 
 (defvar beacon-preview--last-url nil
   "Last URL opened by beacon preview.")
@@ -188,11 +385,14 @@ preview sync for an existing live preview."
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "o") #'beacon-preview-build-and-open)
     (define-key map (kbd "r") #'beacon-preview-build-and-refresh)
+    (define-key map (kbd "s") #'beacon-preview-apply-behavior-style)
     (define-key map (kbd "j") #'beacon-preview-jump-to-current-heading)
     (define-key map (kbd "b") #'beacon-preview-jump-to-current-block)
     (define-key map (kbd "a") #'beacon-preview-jump-to-anchor)
+    (define-key map (kbd "h") #'beacon-preview-flash-current-target)
     (define-key map (kbd "f") #'beacon-preview-toggle-refresh-jump-behavior)
     (define-key map (kbd "w") #'beacon-preview-toggle-follow-window-display-changes)
+    (define-key map (kbd "v") #'beacon-preview-toggle-reveal-hidden-preview-window)
     (define-key map (kbd "d") #'beacon-preview-toggle-debug)
     map)
   "Prefix keymap for `beacon-preview-mode' commands.")
@@ -228,6 +428,7 @@ it."
         (if (eq beacon-preview-refresh-jump-behavior 'block)
             'preserve
           'block))
+  (beacon-preview--sync-behavior-style)
   (message "[beacon-preview] refresh jump behavior: %s"
            beacon-preview-refresh-jump-behavior))
 
@@ -235,14 +436,32 @@ it."
   "Toggle preview following for source window display-position changes.
 
 With prefix ARG, enable display following when ARG is positive, otherwise
-disable it."
+ disable it."
   (interactive "P")
   (setq beacon-preview-follow-window-display-changes
         (if arg
             (> (prefix-numeric-value arg) 0)
           (not beacon-preview-follow-window-display-changes)))
+  (beacon-preview--sync-behavior-style)
   (message "[beacon-preview] follow window display changes %s"
            (if beacon-preview-follow-window-display-changes
+               "enabled"
+             "disabled")))
+
+(defun beacon-preview-toggle-reveal-hidden-preview-window (&optional arg)
+  "Toggle whether source-driven updates may foreground a hidden preview window.
+
+With prefix ARG, enable foregrounding when ARG is positive, otherwise disable
+it. Explicit preview-display commands still show the preview window regardless
+of this setting."
+  (interactive "P")
+  (setq beacon-preview-reveal-hidden-preview-window
+        (if arg
+            (> (prefix-numeric-value arg) 0)
+          (not beacon-preview-reveal-hidden-preview-window)))
+  (beacon-preview--sync-behavior-style)
+  (message "[beacon-preview] reveal hidden preview window %s"
+           (if beacon-preview-reveal-hidden-preview-window
                "enabled"
              "disabled")))
 
@@ -264,11 +483,26 @@ disable it."
        (fboundp 'xwidget-webkit-current-session)
        (fboundp 'xwidget-webkit-goto-url)))
 
+(defun beacon-preview--xwidget-session-for-buffer (preview-buffer &optional window)
+  "Return the xwidget webkit session associated with PREVIEW-BUFFER.
+
+Some Emacs xwidget setups only expose the current session reliably when the
+preview buffer is the selected buffer in its window. When direct buffer-local
+lookup returns nil, retry from WINDOW or from an already visible preview
+window before concluding that the preview session is gone."
+  (when (buffer-live-p preview-buffer)
+    (or (with-current-buffer preview-buffer
+          (xwidget-webkit-current-session))
+        (when-let ((preview-window (or window
+                                       (get-buffer-window preview-buffer t))))
+          (save-selected-window
+            (with-selected-window preview-window
+              (switch-to-buffer preview-buffer)
+              (xwidget-webkit-current-session)))))))
+
 (defun beacon-preview--xwidget-session ()
   "Return the xwidget session for the current source buffer's preview."
-  (when (buffer-live-p beacon-preview--xwidget-buffer)
-    (with-current-buffer beacon-preview--xwidget-buffer
-      (xwidget-webkit-current-session))))
+  (beacon-preview--xwidget-session-for-buffer beacon-preview--xwidget-buffer))
 
 (defun beacon-preview--live-preview-p ()
   "Return non-nil when the current source buffer has a live preview session."
@@ -282,12 +516,12 @@ disable it."
 (defun beacon-preview--current-anchor-maybe ()
   "Return the current source-correlated anchor when source-side lookup is applicable.
 
-This prefers a more specific block anchor when one can be resolved for point,
-and otherwise falls back to heading-based navigation."
-  (when (and beacon-preview-follow-current-heading-on-refresh
-             (beacon-preview--supported-source-mode-p))
+This prefers a more specific block anchor near point, including boundary
+positions that should resolve to the preceding block, and otherwise falls back
+to heading-based navigation."
+  (when (beacon-preview--supported-source-mode-p)
     (ignore-errors
-      (or (beacon-preview-current-block-anchor)
+      (or (beacon-preview--nearest-block-anchor-at-pos (point))
           (beacon-preview-current-heading-anchor)))))
 
 (defun beacon-preview--preview-url (file &optional anchor)
@@ -329,26 +563,60 @@ and otherwise falls back to heading-based navigation."
                           xwidget
                           script))))))))))))
 
+(defun beacon-preview--install-xwidget-callback-for-session (session)
+  "Install the beacon preview xwidget callback into xwidget SESSION."
+  (when (and session
+             (fboundp 'xwidget-put))
+    (xwidget-put session 'callback #'beacon-preview--xwidget-callback)))
+
 (defun beacon-preview--install-xwidget-callback (preview-buffer)
   "Install the beacon preview xwidget callback into PREVIEW-BUFFER."
   (when (buffer-live-p preview-buffer)
-    (with-current-buffer preview-buffer
-      (when-let ((session (and (fboundp 'xwidget-webkit-current-session)
-                               (xwidget-webkit-current-session))))
-        (xwidget-put session 'callback #'beacon-preview--xwidget-callback)))))
+    (beacon-preview--install-xwidget-callback-for-session
+     (beacon-preview--xwidget-session-for-buffer preview-buffer))))
 
 (defun beacon-preview--queue-position-sync (preview-buffer anchor ratio)
-  "Queue a post-load sync for PREVIEW-BUFFER to ANCHOR at RATIO."
+  "Queue a post-load sync for PREVIEW-BUFFER to ANCHOR with optional RATIO."
   (when (and (buffer-live-p preview-buffer)
-             anchor
-             ratio)
+             anchor)
     (with-current-buffer preview-buffer
       (setq beacon-preview--pending-sync-generation
             (1+ beacon-preview--pending-sync-generation))
-      (beacon-preview--debug "queue sync anchor=%S ratio=%.4f buffer=%s"
+      (beacon-preview--debug "queue sync anchor=%S ratio=%S buffer=%s"
                              anchor ratio (buffer-name preview-buffer))
       (setq beacon-preview--pending-sync-script
             (beacon-preview--jump-script anchor ratio)))))
+
+(defun beacon-preview--initialize-preview-buffer (source-buffer session anchor ratio)
+  "Track xwidget SESSION for SOURCE-BUFFER and queue initial sync.
+
+ANCHOR and RATIO describe the initial post-load position sync to request for the
+new preview buffer. The xwidget callback must already be installed for SESSION."
+  (let ((preview-buffer (and session (xwidget-buffer session))))
+    (when (buffer-live-p preview-buffer)
+      (with-current-buffer source-buffer
+        (setq beacon-preview--xwidget-buffer preview-buffer))
+      (beacon-preview--label-preview-buffer preview-buffer source-buffer)
+      (beacon-preview--queue-position-sync preview-buffer anchor ratio))
+    preview-buffer))
+
+(defun beacon-preview--navigate-preview-session (preview-buffer window url anchor ratio)
+  "Reload PREVIEW-BUFFER in WINDOW to URL and queue sync to ANCHOR at RATIO."
+  (beacon-preview--queue-position-sync preview-buffer anchor ratio)
+  (save-selected-window
+    (if (window-live-p window)
+        (with-selected-window window
+          (set-window-buffer window preview-buffer)
+          (xwidget-webkit-goto-url url))
+      (with-current-buffer preview-buffer
+        (xwidget-webkit-goto-url url)))))
+
+(defun beacon-preview--restore-origin-context (window buffer)
+  "Restore selected WINDOW and current BUFFER after preview operations."
+  (when (window-live-p window)
+    (select-window window 'norecord))
+  (when (buffer-live-p buffer)
+    (set-buffer buffer)))
 
 (defun beacon-preview--source-window (&optional buffer)
   "Return a live window displaying BUFFER, preferring the selected window."
@@ -358,6 +626,49 @@ and otherwise falls back to heading-based navigation."
       (selected-window))
      (t
       (get-buffer-window buffer t)))))
+
+(defun beacon-preview--context-source-buffer ()
+  "Return the source buffer for the current beacon preview context, or nil."
+  (cond
+   ((and (beacon-preview--supported-source-mode-p)
+         (buffer-live-p beacon-preview--xwidget-buffer))
+    (current-buffer))
+   ((buffer-live-p beacon-preview--source-buffer)
+    beacon-preview--source-buffer)
+   (t nil)))
+
+(defun beacon-preview--context-preview-buffer ()
+  "Return the preview buffer for the current beacon preview context, or nil."
+  (cond
+   ((buffer-live-p beacon-preview--xwidget-buffer)
+    beacon-preview--xwidget-buffer)
+   ((and (buffer-live-p beacon-preview--source-buffer)
+         (eq major-mode 'xwidget-webkit-mode))
+    (current-buffer))
+   (t nil)))
+
+(defun beacon-preview--show-source-buffer (source-buffer)
+  "Select a window showing SOURCE-BUFFER, displaying it if needed."
+  (let ((window (or (beacon-preview--source-window source-buffer)
+                    (display-buffer source-buffer))))
+    (unless (window-live-p window)
+      (user-error "Could not display source buffer %s" (buffer-name source-buffer)))
+    (select-window window)
+    (switch-to-buffer source-buffer)
+    window))
+
+(defun beacon-preview--clamp-ratio (ratio)
+  "Clamp RATIO to the inclusive [0.0, 1.0] range."
+  (min 1.0
+       (max 0.0 (float ratio))))
+
+(defun beacon-preview--recenter-window-to-ratio (window ratio)
+  "Recenter WINDOW so point appears at approximately RATIO of the window height."
+  (let* ((body-lines (max 1 (window-body-height window)))
+         (target-line (truncate (* (beacon-preview--clamp-ratio ratio)
+                                   (1- body-lines)))))
+    (with-selected-window window
+      (recenter target-line))))
 
 (defun beacon-preview--window-line-ratio (&optional window position)
   "Return POSITION's approximate vertical ratio within WINDOW.
@@ -459,6 +770,212 @@ block, including the opening and closing fence lines."
               (and (equal (alist-get 'kind entry) kind)
                    (= (alist-get 'index entry) index)))
             (beacon-preview--manifest-entries)))
+
+(defun beacon-preview--org-heading-info-at-point ()
+  "Return an Org heading plist at point, including level, text, and position."
+  (save-excursion
+    (beginning-of-line)
+    (when (looking-at "^\\(\\*+\\)[ 	]+\\(.+\\)$")
+      (list :level (length (match-string-no-properties 1))
+            :text (string-trim (match-string-no-properties 2))
+            :pos (line-beginning-position)))))
+
+(defun beacon-preview--org-current-heading-info ()
+  "Return the nearest Org heading at or before point, including `:pos'."
+  (save-excursion
+    (catch 'heading
+      (or (beacon-preview--org-heading-info-at-point)
+          (progn
+            (beginning-of-line)
+            (while (not (bobp))
+              (forward-line -1)
+              (when-let ((heading (beacon-preview--org-heading-info-at-point)))
+                (throw 'heading heading)))
+            nil)))))
+
+(defun beacon-preview--org-heading-occurrence (heading)
+  "Return 1-based occurrence count for Org HEADING up to point."
+  (save-excursion
+    (let ((count 0)
+          (target-level (plist-get heading :level))
+          (target-text (plist-get heading :text))
+          (limit (point)))
+      (save-restriction
+        (narrow-to-region (point-min) limit)
+        (goto-char (point-min))
+        (while (not (eobp))
+          (when-let ((candidate (beacon-preview--org-heading-info-at-point)))
+            (when (and (= (plist-get candidate :level) target-level)
+                       (string= (plist-get candidate :text) target-text))
+              (setq count (1+ count))))
+          (forward-line 1)))
+      count)))
+
+(defun beacon-preview--org-list-item-beginning-position ()
+  "Return the beginning position of the current Org list item, or nil."
+  (save-excursion
+    (beginning-of-line)
+    (when (looking-at "^[ 	]*\\(?:[-+]\\|[0-9]+[.)]\\)[ 	]+\\S-")
+      (line-beginning-position))))
+
+(defun beacon-preview--org-list-item-index ()
+  "Return the 1-based Org list item index at point, or nil."
+  (when-let ((target (beacon-preview--org-list-item-beginning-position)))
+    (save-excursion
+      (goto-char (point-min))
+      (beginning-of-line)
+      (let ((count 0)
+            (found nil))
+        (while (and (not found) (not (eobp)))
+          (when (looking-at "^[ 	]*\\(?:[-+]\\|[0-9]+[.)]\\)[ 	]+\\S-")
+            (setq count (1+ count))
+            (when (= (line-beginning-position) target)
+              (setq found count)))
+          (unless found
+            (forward-line 1)))
+        found))))
+
+(defun beacon-preview--org-paragraph-line-p ()
+  "Return non-nil when the current Org line should count as paragraph content."
+  (and (not (looking-at "^[ 	]*$"))
+       (not (looking-at "^\\*+[ 	]+"))
+       (not (looking-at "^[ 	]*\\(?:[-+]\\|[0-9]+[.)]\\)[ 	]+\\S-"))))
+
+(defun beacon-preview--org-paragraph-beginning-position ()
+  "Return the beginning position of the current Org paragraph block, or nil."
+  (save-excursion
+    (beginning-of-line)
+    (when (beacon-preview--org-paragraph-line-p)
+      (while (and (not (bobp))
+                  (progn
+                    (forward-line -1)
+                    (beacon-preview--org-paragraph-line-p)))
+        nil)
+      (unless (beacon-preview--org-paragraph-line-p)
+        (forward-line 1))
+      (line-beginning-position))))
+
+(defun beacon-preview--org-skip-paragraph-forward ()
+  "Move point to the first line after the current Org paragraph block." 
+  (while (and (beacon-preview--org-paragraph-line-p)
+              (zerop (forward-line 1)))
+    nil))
+
+(defun beacon-preview--org-paragraph-index ()
+  "Return the 1-based Org paragraph index at point, or nil."
+  (when-let ((target (beacon-preview--org-paragraph-beginning-position)))
+    (save-excursion
+      (goto-char (point-min))
+      (beginning-of-line)
+      (let ((count 0)
+            (found nil))
+        (while (and (not found) (not (eobp)))
+          (if (beacon-preview--org-paragraph-line-p)
+              (let ((paragraph-begin (line-beginning-position)))
+                (setq count (1+ count))
+                (when (= paragraph-begin target)
+                  (setq found count))
+                (beacon-preview--org-skip-paragraph-forward))
+            (forward-line 1)))
+        found))))
+
+(defun beacon-preview--org-begin-end-block-info ()
+  "Return Org begin/end block info at point, or nil.
+
+The returned plist contains `:type', `:begin', and `:end' for the surrounding
+`#+begin_...` block when point is inside it or on its delimiters." 
+  (save-excursion
+    (let ((target (point))
+          (case-fold-search t))
+      (beginning-of-line)
+      (catch 'block
+        (while (re-search-backward "^[ 	]*#\\+begin_\\([[:alnum:]_]+\\)\\b" nil t)
+          (let ((begin (line-beginning-position))
+                (type (downcase (match-string-no-properties 1))))
+            (when (re-search-forward
+                   (format "^[ 	]*#\\+end_%s\\b" (regexp-quote type))
+                   nil
+                   t)
+              (let ((end (line-end-position)))
+                (when (and (<= begin target)
+                           (<= target end))
+                  (throw 'block (list :type type :begin begin :end end)))))))))))
+
+(defun beacon-preview--org-blockquote-beginning-position ()
+  "Return the beginning position of the current Org quote block, or nil."
+  (when-let ((block (beacon-preview--org-begin-end-block-info)))
+    (when (member (plist-get block :type) '("quote"))
+      (plist-get block :begin))))
+
+(defun beacon-preview--org-blockquote-index ()
+  "Return the 1-based Org quote block index at point, or nil."
+  (when-let ((target (beacon-preview--org-blockquote-beginning-position)))
+    (save-excursion
+      (goto-char (point-min))
+      (let ((count 0)
+            (found nil)
+            (case-fold-search t))
+        (while (and (not found)
+                    (re-search-forward "^[ 	]*#\\+begin_quote\\b" nil t))
+          (setq count (1+ count))
+          (when (= (line-beginning-position) target)
+            (setq found count)))
+        found))))
+
+(defun beacon-preview--org-source-block-beginning-position ()
+  "Return the beginning position of the current Org source/example block, or nil."
+  (when-let ((block (beacon-preview--org-begin-end-block-info)))
+    (when (member (plist-get block :type) '("src" "example"))
+      (plist-get block :begin))))
+
+(defun beacon-preview--org-source-block-index ()
+  "Return the 1-based Org source/example block index at point, or nil."
+  (when-let ((target (beacon-preview--org-source-block-beginning-position)))
+    (save-excursion
+      (goto-char (point-min))
+      (let ((count 0)
+            (found nil)
+            (case-fold-search t))
+        (while (and (not found)
+                    (re-search-forward "^[ 	]*#\\+begin_\\(src\\|example\\)\\b" nil t))
+          (setq count (1+ count))
+          (when (= (line-beginning-position) target)
+            (setq found count)))
+        found))))
+
+(defun beacon-preview--org-table-beginning-position ()
+  "Return the beginning position of the current Org table, or nil."
+  (save-excursion
+    (beginning-of-line)
+    (when (looking-at "^[ 	]*|.*|[ 	]*$")
+      (while (and (not (bobp))
+                  (progn
+                    (forward-line -1)
+                    (looking-at "^[ 	]*|.*|[ 	]*$")))
+        nil)
+      (unless (looking-at "^[ 	]*|.*|[ 	]*$")
+        (forward-line 1))
+      (line-beginning-position))))
+
+(defun beacon-preview--org-table-index ()
+  "Return the 1-based Org table index at point, or nil."
+  (when-let ((target (beacon-preview--org-table-beginning-position)))
+    (save-excursion
+      (goto-char (point-min))
+      (beginning-of-line)
+      (let ((count 0)
+            (found nil))
+        (while (and (not found) (not (eobp)))
+          (if (looking-at "^[ 	]*|.*|[ 	]*$")
+              (let ((begin (line-beginning-position)))
+                (setq count (1+ count))
+                (when (= begin target)
+                  (setq found count))
+                (while (and (zerop (forward-line 1))
+                            (looking-at "^[ 	]*|.*|[ 	]*$"))
+                  nil))
+            (forward-line 1)))
+        found))))
 
 (defun beacon-preview--markdown-blockquote-beginning-position ()
   "Return the beginning position of the current Markdown blockquote, or nil."
@@ -655,39 +1172,374 @@ rules so it can align with Pandoc/beaconified `pre' entries."
         nil))))
 
 (defun beacon-preview--block-anchor-at-pos (pos)
-  "Return the block anchor for POS, or nil when none is resolved.
-
-Supported source-side block mappings currently include fenced code blocks,
-blockquotes, pipe tables, Markdown list items, and plain paragraphs, all
-resolved through manifest occurrence indices when available."
+  "Return the block anchor for POS, or nil when none is resolved."
   (when (beacon-preview--supported-source-mode-p)
     (save-excursion
       (goto-char pos)
-      (or (when (beacon-preview--markdown-in-fenced-code-block-p)
-            (when-let* ((index (beacon-preview--markdown-fenced-code-block-index))
+      (cond
+       ((derived-mode-p 'org-mode)
+        (or (when-let* ((index (beacon-preview--org-source-block-index))
                         (entry (beacon-preview--manifest-entry-at-index "pre" index))
                         (anchor (alist-get 'anchor entry)))
-              anchor))
-          (when-let* ((index (beacon-preview--markdown-blockquote-index))
-                      (entry (beacon-preview--manifest-entry-at-index "blockquote" index))
-                      (anchor (alist-get 'anchor entry)))
-            anchor)
-          (when-let* ((index (beacon-preview--markdown-table-index))
-                      (entry (beacon-preview--manifest-entry-at-index "table" index))
-                      (anchor (alist-get 'anchor entry)))
-            anchor)
-          (when-let* ((index (beacon-preview--markdown-list-item-index))
-                      (entry (beacon-preview--manifest-entry-at-index "li" index))
-                      (anchor (alist-get 'anchor entry)))
-            anchor)
-          (when-let* ((index (beacon-preview--markdown-paragraph-index))
-                      (entry (beacon-preview--manifest-entry-at-index "p" index))
-                      (anchor (alist-get 'anchor entry)))
-            anchor)))))
+              anchor)
+            (when-let* ((index (beacon-preview--org-blockquote-index))
+                        (entry (beacon-preview--manifest-entry-at-index "blockquote" index))
+                        (anchor (alist-get 'anchor entry)))
+              anchor)
+            (when-let* ((index (beacon-preview--org-table-index))
+                        (entry (beacon-preview--manifest-entry-at-index "table" index))
+                        (anchor (alist-get 'anchor entry)))
+              anchor)
+            (when-let* ((index (beacon-preview--org-list-item-index))
+                        (entry (beacon-preview--manifest-entry-at-index "li" index))
+                        (anchor (alist-get 'anchor entry)))
+              anchor)
+            (when-let* ((index (beacon-preview--org-paragraph-index))
+                        (entry (beacon-preview--manifest-entry-at-index "p" index))
+                        (anchor (alist-get 'anchor entry)))
+              anchor)))
+       (t
+        (or (when (beacon-preview--markdown-in-fenced-code-block-p)
+              (when-let* ((index (beacon-preview--markdown-fenced-code-block-index))
+                          (entry (beacon-preview--manifest-entry-at-index "pre" index))
+                          (anchor (alist-get 'anchor entry)))
+                anchor))
+            (when-let* ((index (beacon-preview--markdown-blockquote-index))
+                        (entry (beacon-preview--manifest-entry-at-index "blockquote" index))
+                        (anchor (alist-get 'anchor entry)))
+              anchor)
+            (when-let* ((index (beacon-preview--markdown-table-index))
+                        (entry (beacon-preview--manifest-entry-at-index "table" index))
+                        (anchor (alist-get 'anchor entry)))
+              anchor)
+            (when-let* ((index (beacon-preview--markdown-list-item-index))
+                        (entry (beacon-preview--manifest-entry-at-index "li" index))
+                        (anchor (alist-get 'anchor entry)))
+              anchor)
+            (when-let* ((index (beacon-preview--markdown-paragraph-index))
+                        (entry (beacon-preview--manifest-entry-at-index "p" index))
+                        (anchor (alist-get 'anchor entry)))
+              anchor)))))))
 
 (defun beacon-preview-current-block-anchor ()
   "Return the current block anchor for point, or nil when none is resolved."
   (beacon-preview--block-anchor-at-pos (point)))
+
+(defun beacon-preview--org-heading-position-at-index (level index)
+  "Return the position of the Org heading at LEVEL and 1-based INDEX, or nil."
+  (save-excursion
+    (goto-char (point-min))
+    (beginning-of-line)
+    (let ((count 0)
+          (found nil))
+      (while (and (not found) (not (eobp)))
+        (when-let ((heading (beacon-preview--org-heading-info-at-point)))
+          (when (= (plist-get heading :level) level)
+            (setq count (1+ count))
+            (when (= count index)
+              (setq found (plist-get heading :pos)))))
+        (unless found
+          (forward-line 1)))
+      found)))
+
+(defun beacon-preview--org-list-item-position-at-index (index)
+  "Return the position of the Org list item at 1-based INDEX, or nil."
+  (save-excursion
+    (goto-char (point-min))
+    (beginning-of-line)
+    (let ((count 0)
+          (found nil))
+      (while (and (not found) (not (eobp)))
+        (when (looking-at "^[ \t]*\\(?:[-+]\\|[0-9]+[.)]\\)[ \t]+\\S-")
+          (setq count (1+ count))
+          (when (= count index)
+            (setq found (line-beginning-position))))
+        (unless found
+          (forward-line 1)))
+      found)))
+
+(defun beacon-preview--org-paragraph-position-at-index (index)
+  "Return the position of the Org paragraph at 1-based INDEX, or nil."
+  (save-excursion
+    (goto-char (point-min))
+    (beginning-of-line)
+    (let ((count 0)
+          (found nil))
+      (while (and (not found) (not (eobp)))
+        (if (beacon-preview--org-paragraph-line-p)
+            (let ((paragraph-begin (line-beginning-position)))
+              (setq count (1+ count))
+              (when (= count index)
+                (setq found paragraph-begin))
+              (beacon-preview--org-skip-paragraph-forward))
+          (forward-line 1)))
+      found)))
+
+(defun beacon-preview--org-blockquote-position-at-index (index)
+  "Return the position of the Org quote block at 1-based INDEX, or nil."
+  (save-excursion
+    (goto-char (point-min))
+    (let ((count 0)
+          (found nil)
+          (case-fold-search t))
+      (while (and (not found)
+                  (re-search-forward "^[ \t]*#\\+begin_quote\\b" nil t))
+        (setq count (1+ count))
+        (when (= count index)
+          (setq found (line-beginning-position))))
+      found)))
+
+(defun beacon-preview--org-source-block-position-at-index (index)
+  "Return the position of the Org source/example block at 1-based INDEX, or nil."
+  (save-excursion
+    (goto-char (point-min))
+    (let ((count 0)
+          (found nil)
+          (case-fold-search t))
+      (while (and (not found)
+                  (re-search-forward "^[ \t]*#\\+begin_\\(src\\|example\\)\\b" nil t))
+        (setq count (1+ count))
+        (when (= count index)
+          (setq found (line-beginning-position))))
+      found)))
+
+(defun beacon-preview--org-table-position-at-index (index)
+  "Return the position of the Org table at 1-based INDEX, or nil."
+  (save-excursion
+    (goto-char (point-min))
+    (beginning-of-line)
+    (let ((count 0)
+          (found nil))
+      (while (and (not found) (not (eobp)))
+        (if (looking-at "^[ \t]*|.*|[ \t]*$")
+            (let ((begin (line-beginning-position)))
+              (setq count (1+ count))
+              (when (= count index)
+                (setq found begin))
+              (while (and (zerop (forward-line 1))
+                          (looking-at "^[ \t]*|.*|[ \t]*$"))
+                nil))
+          (forward-line 1)))
+      found)))
+
+(defun beacon-preview--markdown-heading-position-at-index (level index)
+  "Return the position of the Markdown heading at LEVEL and 1-based INDEX, or nil."
+  (save-excursion
+    (goto-char (point-min))
+    (beginning-of-line)
+    (let ((count 0)
+          (found nil))
+      (while (and (not found) (not (eobp)))
+        (when-let ((heading (or (beacon-preview--markdown-heading-info-at-point)
+                                (beacon-preview--markdown-setext-heading-info-at-point))))
+          (when (= (plist-get heading :level) level)
+            (setq count (1+ count))
+            (when (= count index)
+              (setq found (plist-get heading :pos)))))
+        (unless found
+          (forward-line 1)))
+      found)))
+
+(defun beacon-preview--markdown-blockquote-position-at-index (index)
+  "Return the position of the Markdown blockquote at 1-based INDEX, or nil."
+  (save-excursion
+    (goto-char (point-min))
+    (beginning-of-line)
+    (let ((count 0)
+          (found nil))
+      (while (and (not found) (not (eobp)))
+        (if (and (not (beacon-preview--markdown-in-fenced-code-block-p))
+                 (looking-at "^[ \t]*>[ \t]?"))
+            (let ((begin (line-beginning-position)))
+              (setq count (1+ count))
+              (when (= count index)
+                (setq found begin))
+              (while (and (zerop (forward-line 1))
+                          (looking-at "^[ \t]*>[ \t]?"))
+                nil))
+          (forward-line 1)))
+      found)))
+
+(defun beacon-preview--markdown-table-position-at-index (index)
+  "Return the position of the Markdown pipe table at 1-based INDEX, or nil."
+  (save-excursion
+    (goto-char (point-min))
+    (beginning-of-line)
+    (let ((count 0)
+          (found nil))
+      (while (and (not found) (not (eobp)))
+        (if-let ((begin (beacon-preview--markdown-table-beginning-position)))
+            (progn
+              (setq count (1+ count))
+              (when (= count index)
+                (setq found begin))
+              (forward-line 2)
+              (while (and (not (eobp))
+                          (looking-at "^[ \t]*|.*|[ \t]*$"))
+                (forward-line 1)))
+          (forward-line 1)))
+      found)))
+
+(defun beacon-preview--markdown-list-item-position-at-index (index)
+  "Return the position of the Markdown list item at 1-based INDEX, or nil."
+  (save-excursion
+    (goto-char (point-min))
+    (beginning-of-line)
+    (let ((count 0)
+          (found nil))
+      (while (and (not found) (not (eobp)))
+        (unless (beacon-preview--markdown-in-fenced-code-block-p)
+          (when (or (looking-at "^[ \t]*[-+*][ \t]+\\S-")
+                    (looking-at "^[ \t]*[0-9]+[.)][ \t]+\\S-"))
+            (setq count (1+ count))
+            (when (= count index)
+              (setq found (line-beginning-position)))))
+        (unless found
+          (forward-line 1)))
+      found)))
+
+(defun beacon-preview--markdown-paragraph-position-at-index (index)
+  "Return the position of the Markdown paragraph at 1-based INDEX, or nil."
+  (save-excursion
+    (goto-char (point-min))
+    (beginning-of-line)
+    (let ((count 0)
+          (found nil))
+      (while (and (not found) (not (eobp)))
+        (if (beacon-preview--markdown-paragraph-line-p)
+            (let ((paragraph-begin (line-beginning-position)))
+              (setq count (1+ count))
+              (when (= count index)
+                (setq found paragraph-begin))
+              (beacon-preview--markdown-skip-paragraph-forward))
+          (forward-line 1)))
+      found)))
+
+(defun beacon-preview--markdown-fenced-code-block-position-at-index (index)
+  "Return the position of the Markdown fenced code block at 1-based INDEX, or nil."
+  (save-excursion
+    (let ((count 0)
+          (fence-char nil)
+          (fence-length 0)
+          (fence-begin nil)
+          (found nil))
+      (goto-char (point-min))
+      (beginning-of-line)
+      (while (and (not found) (not (eobp)))
+        (when-let ((delimiter (beacon-preview--markdown-fence-delimiter-at-point)))
+          (let ((char (car delimiter))
+                (length (cdr delimiter))
+                (line-begin (line-beginning-position)))
+            (if fence-char
+                (when (and (eq char fence-char)
+                           (>= length fence-length))
+                  (setq count (1+ count))
+                  (when (= count index)
+                    (setq found fence-begin))
+                  (setq fence-char nil
+                        fence-length 0
+                        fence-begin nil))
+              (setq fence-char char
+                    fence-length length
+                    fence-begin line-begin))))
+        (forward-line 1))
+      (or found
+          (when fence-begin
+            (setq count (1+ count))
+            (when (= count index)
+              fence-begin))))))
+
+(defun beacon-preview--source-position-for-kind-index (kind index)
+  "Return a source position for manifest KIND at 1-based INDEX, or nil."
+  (when (and kind (integerp index) (> index 0))
+    (cond
+     ((derived-mode-p 'org-mode)
+      (cond
+       ((string-match "\\`h\\([1-6]\\)\\'" kind)
+        (beacon-preview--org-heading-position-at-index
+         (string-to-number (match-string 1 kind))
+         index))
+       ((equal kind "pre")
+        (beacon-preview--org-source-block-position-at-index index))
+       ((equal kind "blockquote")
+        (beacon-preview--org-blockquote-position-at-index index))
+       ((equal kind "table")
+        (beacon-preview--org-table-position-at-index index))
+       ((equal kind "li")
+        (beacon-preview--org-list-item-position-at-index index))
+       ((equal kind "p")
+        (beacon-preview--org-paragraph-position-at-index index))))
+     (t
+      (cond
+       ((string-match "\\`h\\([1-6]\\)\\'" kind)
+        (beacon-preview--markdown-heading-position-at-index
+         (string-to-number (match-string 1 kind))
+         index))
+       ((equal kind "pre")
+        (beacon-preview--markdown-fenced-code-block-position-at-index index))
+       ((equal kind "blockquote")
+        (beacon-preview--markdown-blockquote-position-at-index index))
+       ((equal kind "table")
+        (beacon-preview--markdown-table-position-at-index index))
+       ((equal kind "li")
+        (beacon-preview--markdown-list-item-position-at-index index))
+       ((equal kind "p")
+        (beacon-preview--markdown-paragraph-position-at-index index)))))))
+
+(defun beacon-preview--apply-preview-entry-to-source (entry source-buffer)
+  "Move SOURCE-BUFFER to the position identified by preview manifest ENTRY.
+
+When ENTRY includes a `ratio' field, try to place the source position at a
+similar vertical ratio in the source window."
+  (with-current-buffer source-buffer
+    (let* ((kind (alist-get 'kind entry))
+           (index (alist-get 'index entry))
+           (ratio (alist-get 'ratio entry))
+           (position (beacon-preview--source-position-for-kind-index kind index)))
+      (unless position
+        (user-error "No source position found for preview %s #%s" kind index))
+      (let ((window (beacon-preview--show-source-buffer source-buffer)))
+        (goto-char position)
+        (set-window-point window position)
+        (if (numberp ratio)
+            (beacon-preview--recenter-window-to-ratio window ratio)
+          (with-selected-window window
+            (recenter)))
+        position))))
+
+(defun beacon-preview--nearest-block-source-position-at-pos (pos)
+  "Return a nearby source block start for POS, preferring the preceding block."
+  (save-excursion
+    (goto-char pos)
+    (cond
+     ((derived-mode-p 'org-mode)
+      (or (beacon-preview--org-source-block-beginning-position)
+          (beacon-preview--org-blockquote-beginning-position)
+          (beacon-preview--org-table-beginning-position)
+          (beacon-preview--org-list-item-beginning-position)
+          (beacon-preview--org-paragraph-beginning-position)
+          (progn
+            (skip-chars-backward " \t\n")
+            (or (beacon-preview--org-source-block-beginning-position)
+                (beacon-preview--org-blockquote-beginning-position)
+                (beacon-preview--org-table-beginning-position)
+                (beacon-preview--org-list-item-beginning-position)
+                (beacon-preview--org-paragraph-beginning-position)))))
+     (t
+      (or (when-let ((block (beacon-preview--markdown-current-fenced-code-block-info)))
+            (plist-get block :begin))
+          (beacon-preview--markdown-blockquote-beginning-position)
+          (beacon-preview--markdown-table-beginning-position)
+          (beacon-preview--markdown-list-item-beginning-position)
+          (beacon-preview--markdown-paragraph-beginning-position)
+          (progn
+            (skip-chars-backward " \t\n")
+            (or (when-let ((block (beacon-preview--markdown-current-fenced-code-block-info)))
+                  (plist-get block :begin))
+                (beacon-preview--markdown-blockquote-beginning-position)
+                (beacon-preview--markdown-table-beginning-position)
+                (beacon-preview--markdown-list-item-beginning-position)
+                (beacon-preview--markdown-paragraph-beginning-position))))))))
 
 (defun beacon-preview--target-source-position-at-pos (pos)
   "Return the source position for the jump target that contains POS, or nil.
@@ -696,18 +1548,36 @@ This prefers a more specific source block position when available and otherwise
 falls back to the current heading position."
   (save-excursion
     (goto-char pos)
-    (or (when-let ((block (beacon-preview--markdown-current-fenced-code-block-info)))
-          (plist-get block :begin))
-        (beacon-preview--markdown-blockquote-beginning-position)
-        (beacon-preview--markdown-table-beginning-position)
-        (beacon-preview--markdown-list-item-beginning-position)
-        (beacon-preview--markdown-paragraph-beginning-position)
-        (when-let ((heading (beacon-preview--markdown-current-heading-info)))
-          (plist-get heading :pos)))))
+    (or (beacon-preview--nearest-block-source-position-at-pos pos)
+        (if-let ((heading (if (derived-mode-p 'org-mode)
+                              (beacon-preview--org-current-heading-info)
+                            (beacon-preview--markdown-current-heading-info))))
+            (plist-get heading :pos)
+          nil))))
 
 (defun beacon-preview--target-source-position-maybe ()
   "Return the source position for the current jump target, or nil."
   (beacon-preview--target-source-position-at-pos (point)))
+
+(defun beacon-preview--anchor-kind (anchor)
+  "Return the manifest kind for ANCHOR, or nil when unknown."
+  (when-let ((entry (seq-find (lambda (candidate)
+                                (equal (alist-get 'anchor candidate) anchor))
+                              (beacon-preview--manifest-entries))))
+    (alist-get 'kind entry)))
+
+(defun beacon-preview--nearest-block-anchor-at-pos (pos)
+  "Return a nearby block anchor for POS, preferring the preceding block.
+
+Boundary positions such as trailing whitespace or blank separator lines should
+resolve to the block immediately before point rather than jumping ahead into the
+next block." 
+  (save-excursion
+    (goto-char pos)
+    (or (beacon-preview--block-anchor-at-pos (point))
+        (progn
+          (skip-chars-backward " \t\n")
+          (beacon-preview--block-anchor-at-pos (point))))))
 
 (defun beacon-preview--edited-anchors ()
   "Return de-duplicated block anchors for recently edited positions."
@@ -717,7 +1587,7 @@ falls back to the current heading position."
         (when (and (integer-or-marker-p pos)
                    (<= (point-min) pos)
                    (<= pos (point-max)))
-          (when-let ((anchor (beacon-preview--block-anchor-at-pos pos)))
+          (when-let ((anchor (beacon-preview--nearest-block-anchor-at-pos pos)))
             (unless (member anchor anchors)
               (push anchor anchors))))))))
 
@@ -855,12 +1725,27 @@ falls back to the current heading position."
   (when (buffer-live-p preview-buffer)
     (with-current-buffer preview-buffer
       (setq beacon-preview--source-buffer source-buffer)
-      (beacon-preview--install-xwidget-callback preview-buffer)
       (rename-buffer (beacon-preview--preview-buffer-name source-buffer) t))))
 
 (defun beacon-preview--show-preview-buffer (preview-buffer)
   "Display PREVIEW-BUFFER in a user-visible window."
   (display-buffer preview-buffer beacon-preview-display-buffer-action))
+
+(defun beacon-preview--tracked-preview-window (&optional preview-buffer)
+  "Return a live window already showing PREVIEW-BUFFER, or nil."
+  (when-let ((buffer (or preview-buffer beacon-preview--xwidget-buffer)))
+    (get-buffer-window buffer t)))
+
+(defun beacon-preview--should-show-preview-window-p (&optional explicit preview-buffer)
+  "Return non-nil when PREVIEW-BUFFER should be foregrounded for this action.
+
+EXPLICIT is non-nil for commands that intentionally display the preview window.
+Source-driven updates honor `beacon-preview-reveal-hidden-preview-window' and
+avoid reclaiming a side window that is currently showing another buffer."
+  (or explicit
+      beacon-preview-reveal-hidden-preview-window
+      (not (buffer-live-p preview-buffer))
+      (beacon-preview--tracked-preview-window preview-buffer)))
 
 (defun beacon-preview--artifact-base-name (file)
   "Return the artifact base name derived from FILE."
@@ -888,54 +1773,77 @@ falls back to the current heading position."
   (or (buffer-file-name)
       (user-error "Current buffer is not visiting a file")))
 
-(defun beacon-preview--open-preview (file &optional anchor)
-  "Open FILE as a beacon preview in xwidget, optionally targeting ANCHOR."
+(defun beacon-preview--open-preview (file &optional anchor explicit)
+  "Open FILE as a beacon preview in xwidget, optionally targeting ANCHOR.
+
+When EXPLICIT is non-nil, the preview window may be shown or reclaimed even if
+it is currently hidden behind another buffer."
   (unless (beacon-preview--xwidget-available-p)
     (user-error
      (concat
       "xwidget-webkit preview is unavailable; "
       "this Emacs must be built with xwidgets and running in a graphical session")))
   (let* ((source-buffer (current-buffer))
+         (origin-buffer (current-buffer))
          (source-window (beacon-preview--source-window source-buffer))
+         (origin-window (selected-window))
          (target-source-position (beacon-preview--target-source-position-maybe))
          (raw-ratio (and anchor
-                         source-window
-                         target-source-position
-                         beacon-preview-follow-window-position
-                         (beacon-preview--window-visible-ratio-for-pos
                           source-window
-                          target-source-position)))
+                          target-source-position
+                          (beacon-preview--window-visible-ratio-for-pos
+                           source-window
+                           target-source-position)))
          (ratio (and raw-ratio
                      (beacon-preview--effective-window-ratio raw-ratio)))
          (url (if ratio
                   (beacon-preview--file-url file)
-                (beacon-preview--preview-url file anchor))))
+                (beacon-preview--preview-url file anchor)))
+         (preview-buffer beacon-preview--xwidget-buffer)
+         (opening-buffer (unless preview-buffer
+                           (generate-new-buffer
+                            (format " *beacon-preview-opening: %s*"
+                                    (buffer-name source-buffer)))))
+         (show-preview-window
+          (beacon-preview--should-show-preview-window-p explicit preview-buffer))
+         (window (and show-preview-window
+                      (beacon-preview--show-preview-buffer
+                       (or preview-buffer opening-buffer))))
+         (session (beacon-preview--xwidget-session-for-buffer
+                   preview-buffer
+                   window)))
     (beacon-preview--debug
-     "open-preview anchor=%S target-pos=%S raw-ratio=%S ratio=%S url=%s"
-     anchor target-source-position raw-ratio ratio url)
+     "open-preview anchor=%S target-pos=%S raw-ratio=%S ratio=%S url=%s explicit=%S show-window=%S"
+     anchor target-source-position raw-ratio ratio url explicit show-preview-window)
     (setq beacon-preview--last-url url)
     (setq beacon-preview--last-html-path (expand-file-name file))
-    (let ((window (beacon-preview--show-preview-buffer
-                   (or beacon-preview--xwidget-buffer source-buffer))))
-      (with-selected-window window
-        (if (beacon-preview--live-preview-p)
+    (unwind-protect
+        (if session
             (progn
-              (switch-to-buffer beacon-preview--xwidget-buffer)
-              (beacon-preview--queue-position-sync
-               beacon-preview--xwidget-buffer anchor ratio)
-              (xwidget-webkit-goto-url url))
-          (funcall beacon-preview-open-function url t)
-          (when-let ((session (or (and (boundp 'xwidget-webkit-last-session)
-                                       xwidget-webkit-last-session)
-                                  (xwidget-webkit-current-session))))
-            (with-current-buffer source-buffer
-              (setq beacon-preview--xwidget-buffer
-                    (xwidget-buffer session))
-              (beacon-preview--label-preview-buffer
-               beacon-preview--xwidget-buffer
-               source-buffer)
-              (beacon-preview--queue-position-sync
-               beacon-preview--xwidget-buffer anchor ratio))))))))
+              (beacon-preview--install-xwidget-callback-for-session session)
+              (beacon-preview--navigate-preview-session
+               preview-buffer window url anchor ratio))
+          (when show-preview-window
+            (save-selected-window
+              (with-selected-window window
+                (funcall beacon-preview-open-function url t)
+                (let ((created-session
+                       (or (and (boundp 'xwidget-webkit-last-session)
+                                xwidget-webkit-last-session)
+                           (xwidget-webkit-current-session))))
+                  (when created-session
+                    (beacon-preview--install-xwidget-callback-for-session
+                     created-session)
+                    (setq preview-buffer
+                          (beacon-preview--initialize-preview-buffer
+                           source-buffer
+                           created-session
+                           anchor
+                           ratio))))))))
+      (when (and (buffer-live-p opening-buffer)
+                 (not (eq opening-buffer preview-buffer)))
+        (kill-buffer opening-buffer))
+      (beacon-preview--restore-origin-context origin-window origin-buffer))))
 
 (defun beacon-preview-load-manifest (file)
   "Load FILE as the active beacon manifest."
@@ -1065,7 +1973,7 @@ already have a live preview session."
   (let* ((artifacts (beacon-preview-build-current-file))
          (html-path (plist-get artifacts :html))
          (anchor (beacon-preview--current-anchor-maybe)))
-    (beacon-preview--open-preview html-path anchor)))
+    (beacon-preview--open-preview html-path anchor t)))
 
 (defun beacon-preview-build-and-refresh ()
   "Build preview artifacts, reload the manifest, and refresh the preview.
@@ -1126,13 +2034,111 @@ preview blocks when those targets remain visible after refresh."
    (beacon-preview--current-session)
    script))
 
+(defun beacon-preview--visible-preview-entry-script ()
+  "Return JavaScript that reports a visible preview beacon near viewport center.
+
+The returned JSON includes a `ratio' field describing the selected beacon's
+effective vertical position within the preview viewport."
+  (concat
+   "(function () {"
+   "  if (!window.BeaconPreview || !Array.isArray(window.BeaconPreview.manifest)) {"
+   "    return '';"
+   "  }"
+   "  var supported = {h1:true,h2:true,h3:true,h4:true,h5:true,h6:true,p:true,li:true,blockquote:true,pre:true,table:true};"
+   "  var viewportHeight = Math.max(window.innerHeight || 0, 1);"
+   "  var viewportCenter = viewportHeight / 2;"
+   "  function elementMetrics(element) {"
+   "    if (!element) { return null; }"
+   "    var rect = element.getBoundingClientRect();"
+   "    var visibleTop = Math.max(rect.top, 0);"
+   "    var visibleBottom = Math.min(rect.bottom, viewportHeight);"
+   "    if (visibleBottom <= visibleTop) { return null; }"
+   "    var focusY = Math.min(Math.max(viewportCenter, visibleTop), visibleBottom);"
+   "    var distance = Math.abs(focusY - viewportCenter);"
+   "    var visibleSpan = visibleBottom - visibleTop;"
+   "    return {"
+   "      rectTop: rect.top,"
+   "      rectBottom: rect.bottom,"
+   "      visibleTop: visibleTop,"
+   "      visibleBottom: visibleBottom,"
+   "      visibleSpan: visibleSpan,"
+   "      focusY: focusY,"
+   "      ratio: focusY / viewportHeight,"
+   "      distance: distance"
+   "    };"
+   "  }"
+   "  var best = null;"
+   "  for (var i = 0; i < window.BeaconPreview.manifest.length; i += 1) {"
+   "    var entry = window.BeaconPreview.manifest[i];"
+   "    if (!entry || !supported[entry.kind]) { continue; }"
+   "    var element = document.getElementById(entry.anchor);"
+   "    var metrics = elementMetrics(element);"
+   "    if (!metrics) { continue; }"
+   "    if (!best"
+   "        || metrics.distance < best.distance"
+   "        || (metrics.distance === best.distance && metrics.visibleSpan > best.visibleSpan)"
+   "        || (metrics.distance === best.distance && metrics.visibleSpan === best.visibleSpan && metrics.rectTop < best.rectTop)) {"
+   "      best = {"
+   "        anchor: entry.anchor,"
+   "        kind: entry.kind,"
+   "        index: entry.index,"
+   "        ratio: metrics.ratio,"
+   "        distance: metrics.distance,"
+   "        visibleSpan: metrics.visibleSpan,"
+   "        rectTop: metrics.rectTop"
+   "      };"
+   "    }"
+   "  }"
+   "  return best ? JSON.stringify({anchor: best.anchor, kind: best.kind, index: best.index, ratio: best.ratio}) : '';"
+   "})()"))
+
+(defun beacon-preview--decode-visible-preview-entry (value)
+  "Decode VALUE returned from preview JavaScript into a manifest-like alist."
+  (when (and (stringp value)
+             (not (string-empty-p value)))
+    (condition-case nil
+        (json-parse-string value :object-type 'alist :array-type 'list)
+      (error nil))))
+
+(defun beacon-preview-sync-source-to-preview ()
+  "Move the source buffer to a simple visible block currently shown in preview.
+
+This is a first reverse-sync step: it asks the live preview for a visible
+beacon entry using a simple viewport heuristic, then moves the corresponding
+source buffer to that block or heading."
+  (interactive)
+  (let* ((source-buffer (beacon-preview--context-source-buffer))
+         (preview-buffer (beacon-preview--context-preview-buffer)))
+    (unless (buffer-live-p source-buffer)
+      (user-error "No source buffer is associated with the current context"))
+    (unless (buffer-live-p preview-buffer)
+      (user-error "No live preview buffer is associated with the current context"))
+    (let ((session (beacon-preview--xwidget-session-for-buffer preview-buffer)))
+      (unless session
+        (user-error "No active xwidget webkit session found"))
+      (xwidget-webkit-execute-script
+       session
+       (beacon-preview--visible-preview-entry-script)
+       (lambda (value)
+         (let ((entry (beacon-preview--decode-visible-preview-entry value)))
+           (if (not entry)
+               (message "[beacon-preview] no visible preview beacon found")
+             (condition-case err
+                 (progn
+                   (beacon-preview--apply-preview-entry-to-source entry source-buffer)
+                   (message "[beacon-preview] synced source to preview %s #%s"
+                            (alist-get 'kind entry)
+                            (alist-get 'index entry)))
+               (error
+                (message "[beacon-preview] failed to sync source to preview: %s"
+                         (error-message-string err)))))))))))
+
 (defun beacon-preview-jump-to-anchor (anchor)
   "Jump the current preview to ANCHOR using the injected BeaconPreview API."
   (interactive "sAnchor: ")
   (let* ((source-window (beacon-preview--source-window (current-buffer)))
          (target-source-position (beacon-preview--target-source-position-maybe))
-         (raw-ratio (and beacon-preview-follow-window-position
-                         source-window
+         (raw-ratio (and source-window
                          target-source-position
                          (beacon-preview--window-visible-ratio-for-pos
                           source-window
@@ -1144,6 +2150,24 @@ preview blocks when those targets remain visible after refresh."
      anchor target-source-position raw-ratio ratio)
     (beacon-preview--execute-script
      (beacon-preview--jump-script anchor ratio))))
+
+(defun beacon-preview-flash-current-target ()
+  "Flash the current source-correlated target in the live preview."
+  (interactive)
+  (unless (beacon-preview--live-preview-p)
+    (user-error "No live preview is associated with the current buffer"))
+  (let ((anchor (beacon-preview--current-anchor-maybe)))
+    (unless anchor
+      (user-error "No current block or heading anchor found at point"))
+    (beacon-preview--execute-script
+     (format
+      (concat "(function () {"
+              "  if (!window.BeaconPreview || typeof window.BeaconPreview.flashAnchor !== 'function') {"
+              "    return false;"
+              "  }"
+              "  return window.BeaconPreview.flashAnchor(%S);"
+              "})();")
+      anchor))))
 
 (defun beacon-preview-jump-to-index (kind index)
   "Jump the current preview to beacon KIND at INDEX."
@@ -1345,15 +2369,20 @@ This aims to be closer to Pandoc's generated heading identifiers."
     (string-trim (concat result) "-+" "-+")))
 
 (defun beacon-preview-current-heading-anchor ()
-  "Return the preview anchor for the current Markdown heading context."
+  "Return the preview anchor for the current source heading context."
   (interactive)
   (unless (beacon-preview--supported-source-mode-p)
     (user-error "Current mode is not configured for source-side beacon lookup"))
-  (let ((heading (beacon-preview--markdown-current-heading)))
+  (let* ((org-mode-p (derived-mode-p 'org-mode))
+         (heading (if org-mode-p
+                      (beacon-preview--org-current-heading-info)
+                    (beacon-preview--markdown-current-heading))))
     (unless heading
-      (user-error "No Markdown heading found at or before point"))
+      (user-error "No heading found at or before point"))
     (let* ((resolved (beacon-preview--resolve-heading-anchor heading))
-           (occurrence (beacon-preview--markdown-heading-occurrence heading))
+           (occurrence (if org-mode-p
+                           (beacon-preview--org-heading-occurrence heading)
+                         (beacon-preview--markdown-heading-occurrence heading)))
            (base-anchor (beacon-preview--pandoc-like-slug
                          (plist-get heading :text)))
            (anchor (or resolved
