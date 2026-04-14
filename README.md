@@ -296,21 +296,21 @@ automatically start preview unless you opt in.
 
 ## Useful Commands
 
-- `M-x beacon-preview-mode`
-- `M-x beacon-preview-build-and-open`
-- `M-x beacon-preview-build-and-refresh`
-- `M-x beacon-preview-apply-behavior-style`
-- `M-x beacon-preview-switch-to-preview`
-- `M-x beacon-preview-toggle-preview-display`
-- `M-x beacon-preview-jump-to-current-heading`
-- `M-x beacon-preview-jump-to-current-block`
-- `M-x beacon-preview-jump-to-anchor`
-- `M-x beacon-preview-flash-current-target`
-- `M-x beacon-preview-sync-source-to-preview`
-- `M-x beacon-preview-reload`
-- `M-x beacon-preview-toggle-refresh-jump-behavior`
-- `M-x beacon-preview-toggle-follow-window-display-changes`
-- `M-x beacon-preview-toggle-reveal-hidden-preview-window`
+- `M-x beacon-preview-mode` - enable or disable the minor mode in the current source buffer
+- `M-x beacon-preview-build-and-open` - build preview artifacts and show the preview
+- `M-x beacon-preview-build-and-refresh` - rebuild artifacts and refresh an existing preview
+- `M-x beacon-preview-apply-behavior-style` - apply a named bundle of preview-follow settings
+- `M-x beacon-preview-switch-to-preview` - jump to the tracked preview, starting one if needed
+- `M-x beacon-preview-toggle-preview-display` - show or hide the tracked preview, starting one if needed
+- `M-x beacon-preview-jump-to-current-heading` - scroll the preview to the current source heading
+- `M-x beacon-preview-jump-to-current-block` - scroll the preview to the current source block when possible
+- `M-x beacon-preview-jump-to-anchor` - jump the preview to a specific anchor name
+- `M-x beacon-preview-flash-current-target` - highlight the current source-correlated preview target without scrolling
+- `M-x beacon-preview-sync-source-to-preview` - move the source buffer to the block currently visible in the preview
+- `M-x beacon-preview-reload` - reload the current preview page in xwidget
+- `M-x beacon-preview-toggle-refresh-jump-behavior` - switch between block-following and preserving preview position
+- `M-x beacon-preview-toggle-follow-window-display-changes` - toggle live preview following for source scrolling/recentering
+- `M-x beacon-preview-toggle-reveal-hidden-preview-window` - toggle whether source-driven refresh may re-show a hidden preview
 
 ## Key Bindings
 
