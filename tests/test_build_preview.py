@@ -122,6 +122,18 @@ class BuildPreviewTests(unittest.TestCase):
             check=True,
         )
 
+    def test_run_pandoc_uses_org_input_format_for_org_files(self) -> None:
+        input_path = Path("/tmp/sample.org")
+        output_path = Path("/tmp/sample.html")
+
+        with mock.patch.object(build_preview.subprocess, "run") as run_mock:
+            build_preview.run_pandoc("pandoc", input_path, output_path)
+
+        run_mock.assert_called_once_with(
+            ["pandoc", "-f", "org", str(input_path), "-s", "-o", str(output_path)],
+            check=True,
+        )
+
     def test_emit_artifact_paths_writes_exact_stdout_contract(self) -> None:
         html_path = Path("/tmp/out/sample.html")
         manifest_path = Path("/tmp/out/sample.json")

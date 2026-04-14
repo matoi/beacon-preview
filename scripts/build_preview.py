@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build beaconable preview artifacts from a Markdown source file."""
+"""Build beaconable preview artifacts from a supported source file."""
 
 from __future__ import annotations
 
@@ -42,10 +42,18 @@ def build_paths(input_path: Path, output_dir: Path, name: str | None) -> tuple[P
     return html_path, manifest_path
 
 
+def pandoc_input_format_for_path(input_path: Path) -> str:
+    suffix = input_path.suffix.lower()
+    if suffix == ".org":
+        return "org"
+    return "gfm"
+
+
 def run_pandoc(pandoc: str, input_path: Path, output_path: Path) -> None:
+    input_format = pandoc_input_format_for_path(input_path)
     try:
         subprocess.run(
-            [pandoc, "-f", "gfm", str(input_path), "-s", "-o", str(output_path)],
+            [pandoc, "-f", input_format, str(input_path), "-s", "-o", str(output_path)],
             check=True,
         )
     except FileNotFoundError as exc:

@@ -146,8 +146,9 @@ def render_navigation_script(manifest: list[dict[str, str | int]]) -> str:
 <script>
 (function () {{
   const manifest = {manifest_json};
-  const FLASH_CLASS = "beacon-preview-flash";
   const FLASH_STYLE_ID = "beacon-preview-flash-style";
+  const FLASH_SUBTLE_CLASS = "beacon-preview-flash-subtle";
+  const FLASH_STRONG_CLASS = "beacon-preview-flash-strong";
   let flashTimer = null;
   let flashedElement = null;
 
@@ -159,17 +160,30 @@ def render_navigation_script(manifest: list[dict[str, str | int]]) -> str:
     const style = document.createElement("style");
     style.id = FLASH_STYLE_ID;
     style.textContent = [
-      "." + FLASH_CLASS + " {{{{",
-      "  animation: beacon-preview-flash 0.85s ease-out;",
-      "  box-shadow: 0 0 0 3px rgba(255, 196, 0, 0.28);",
-      "  background-color: rgba(255, 235, 120, 0.18);",
+      "." + FLASH_SUBTLE_CLASS + " {{",
+      "  animation: beacon-preview-flash-subtle 1.05s ease-out;",
+      "  background-color: rgba(255, 235, 120, 0.12);",
       "  border-radius: 0.2rem;",
       "}}",
-      "@keyframes beacon-preview-flash {{{{",
-      "  0% {{{{ background-color: rgba(255, 235, 120, 0.38); box-shadow: 0 0 0 4px rgba(255, 196, 0, 0.34); }}}}",
-      "  100% {{{{ background-color: rgba(255, 235, 120, 0); box-shadow: 0 0 0 0 rgba(255, 196, 0, 0); }}}}",
-      "}}}}"
-    ].join("\n");
+      "." + FLASH_STRONG_CLASS + " {{",
+      "  animation: beacon-preview-flash-strong 1.25s ease-out;",
+      "  background-color: rgba(255, 235, 120, 0.22);",
+      "  box-shadow: inset 0 0 0 2px rgba(255, 196, 0, 0.18);",
+      "  border-radius: 0.2rem;",
+      "}}",
+      "@keyframes beacon-preview-flash-subtle {{",
+      "  0% {{ background-color: rgba(255, 235, 120, 0.24); }}",
+      "  38% {{ background-color: rgba(255, 235, 120, 0.12); }}",
+      "  58% {{ background-color: rgba(255, 235, 120, 0.18); }}",
+      "  100% {{ background-color: rgba(255, 235, 120, 0); }}",
+      "}}",
+      "@keyframes beacon-preview-flash-strong {{",
+      "  0% {{ background-color: rgba(255, 235, 120, 0.42); box-shadow: inset 0 0 0 2px rgba(255, 196, 0, 0.3); }}",
+      "  35% {{ background-color: rgba(255, 235, 120, 0.2); box-shadow: inset 0 0 0 2px rgba(255, 196, 0, 0.14); }}",
+      "  55% {{ background-color: rgba(255, 235, 120, 0.3); box-shadow: inset 0 0 0 2px rgba(255, 196, 0, 0.22); }}",
+      "  100% {{ background-color: rgba(255, 235, 120, 0); box-shadow: inset 0 0 0 0 rgba(255, 196, 0, 0); }}",
+      "}}"
+    ].join("\\n");
     (document.head || document.body || document.documentElement).appendChild(style);
   }}
 
@@ -179,27 +193,29 @@ def render_navigation_script(manifest: list[dict[str, str | int]]) -> str:
       flashTimer = null;
     }}
     if (flashedElement) {{
-      flashedElement.classList.remove(FLASH_CLASS);
+      flashedElement.classList.remove(FLASH_SUBTLE_CLASS);
+      flashedElement.classList.remove(FLASH_STRONG_CLASS);
       flashedElement = null;
     }}
   }}
 
-  function flashElement(element) {{
+  function flashElement(element, variant) {{
     if (!element) {{
       return false;
     }}
 
+    const flashClass = variant === "strong" ? FLASH_STRONG_CLASS : FLASH_SUBTLE_CLASS;
     ensureFlashStyle();
     clearFlash();
     flashedElement = element;
-    element.classList.add(FLASH_CLASS);
+    element.classList.add(flashClass);
     flashTimer = window.setTimeout(function () {{
       if (flashedElement === element) {{
-        element.classList.remove(FLASH_CLASS);
+        element.classList.remove(flashClass);
         flashedElement = null;
       }}
       flashTimer = null;
-    }}, 900);
+    }}, variant === "strong" ? 1300 : 1100);
     return true;
   }}
 
@@ -207,6 +223,15 @@ def render_navigation_script(manifest: list[dict[str, str | int]]) -> str:
     return manifest.find(function (entry) {{
       return entry.anchor === anchor;
     }}) || null;
+  }}
+
+  function flashEntry(entry, variant) {{
+    if (!entry) {{
+      return false;
+    }}
+
+    const element = document.getElementById(entry.anchor);
+    return flashElement(element, variant);
   }}
 
   function findByIndex(kind, index) {{
@@ -229,7 +254,7 @@ def render_navigation_script(manifest: list[dict[str, str | int]]) -> str:
       return false;
     }}
 
-    flashElement(element);
+    flashElement(element, "subtle");
     return true;
   }}
 
@@ -248,8 +273,8 @@ def render_navigation_script(manifest: list[dict[str, str | int]]) -> str:
   }}
 
   function flashAnchor(anchor) {{
-    const element = document.getElementById(anchor);
-    return flashElement(element);
+    const entry = findByAnchor(anchor);
+    return flashEntry(entry, "subtle");
   }}
 
   function flashAnchorIfVisible(anchor) {{
@@ -257,7 +282,8 @@ def render_navigation_script(manifest: list[dict[str, str | int]]) -> str:
     if (!isElementVisible(element)) {{
       return false;
     }}
-    return flashElement(element);
+    const entry = findByAnchor(anchor);
+    return flashEntry(entry, "strong");
   }}
 
   function jumpToIndex(kind, index) {{

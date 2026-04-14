@@ -63,8 +63,24 @@ class BeaconifyHtmlTests(unittest.TestCase):
         self.assertIn("flashAnchorIfVisible", with_api)
         self.assertIn("isElementVisible", with_api)
         self.assertIn("flashElement", with_api)
-        self.assertIn("beacon-preview-flash", with_api)
+        self.assertIn("flashEntry", with_api)
+        self.assertIn("beacon-preview-flash-subtle", with_api)
+        self.assertIn("beacon-preview-flash-strong", with_api)
         self.assertIn("beacon-h1-1", with_api)
+
+    def test_injects_valid_flash_css_rules(self) -> None:
+        html = '<html><body><h1>Title</h1></body></html>'
+        output, manifest = instrument_html(html, prefix="beacon")
+
+        with_api = inject_navigation_api(output, manifest)
+
+        self.assertIn('"." + FLASH_SUBTLE_CLASS + " {"', with_api)
+        self.assertIn('"." + FLASH_STRONG_CLASS + " {"', with_api)
+        self.assertIn('"@keyframes beacon-preview-flash-subtle {"', with_api)
+        self.assertIn('"@keyframes beacon-preview-flash-strong {"', with_api)
+        self.assertIn('].join("\\n")', with_api)
+        self.assertNotIn("{{", with_api)
+        self.assertNotIn("}}", with_api)
 
     def test_injects_navigation_api_with_unicode_manifest_text(self) -> None:
         html = '<html><body><h2>日本語 見出し</h2></body></html>'
