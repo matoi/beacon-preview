@@ -643,6 +643,17 @@ to heading-based navigation."
       (setq beacon-preview--pending-sync-script
             (beacon-preview--jump-script anchor ratio)))))
 
+(defun beacon-preview--link-preview-buffers (source-buffer preview-buffer)
+  "Record bidirectional lifecycle links between SOURCE-BUFFER and PREVIEW-BUFFER."
+  (when (buffer-live-p source-buffer)
+    (with-current-buffer source-buffer
+      (setq beacon-preview--xwidget-buffer preview-buffer)
+      (add-hook 'kill-buffer-hook #'beacon-preview--cleanup-preview-on-source-kill nil t)))
+  (when (buffer-live-p preview-buffer)
+    (with-current-buffer preview-buffer
+      (setq beacon-preview--source-buffer source-buffer)
+      (add-hook 'kill-buffer-hook #'beacon-preview--cleanup-source-on-preview-kill nil t))))
+
 (defun beacon-preview--initialize-preview-buffer (source-buffer session anchor ratio)
   "Track xwidget SESSION for SOURCE-BUFFER and queue initial sync.
 
@@ -650,8 +661,7 @@ ANCHOR and RATIO describe the initial post-load position sync to request for the
 new preview buffer. The xwidget callback must already be installed for SESSION."
   (let ((preview-buffer (and session (xwidget-buffer session))))
     (when (buffer-live-p preview-buffer)
-      (with-current-buffer source-buffer
-        (setq beacon-preview--xwidget-buffer preview-buffer))
+      (beacon-preview--link-preview-buffers source-buffer preview-buffer)
       (beacon-preview--label-preview-buffer preview-buffer source-buffer)
       (beacon-preview--queue-position-sync preview-buffer anchor ratio))
     preview-buffer))
@@ -1778,8 +1788,8 @@ next block."
 (defun beacon-preview--label-preview-buffer (preview-buffer source-buffer)
   "Associate PREVIEW-BUFFER with SOURCE-BUFFER and rename it for clarity."
   (when (buffer-live-p preview-buffer)
+    (beacon-preview--link-preview-buffers source-buffer preview-buffer)
     (with-current-buffer preview-buffer
-      (setq beacon-preview--source-buffer source-buffer)
       (rename-buffer (beacon-preview--preview-buffer-name source-buffer) t))))
 
 (defun beacon-preview--refresh-preview-buffer-label (&optional source-buffer)
@@ -1828,6 +1838,21 @@ next block."
         (with-current-buffer source-buffer
           (setq beacon-preview--preview-frame frame))))))
 
+(defun beacon-preview--cleanup-preview-frame (source-buffer preview-buffer)
+  "Hide or delete SOURCE-BUFFER's package-managed frame showing PREVIEW-BUFFER."
+  (when (buffer-live-p source-buffer)
+    (with-current-buffer source-buffer
+      (let ((preview-frame (beacon-preview--live-preview-frame source-buffer)))
+        (when (and (frame-live-p preview-frame)
+                   (frame-parameter preview-frame 'beacon-preview-dedicated)
+                   (eq (window-buffer (frame-root-window preview-frame)) preview-buffer))
+          (pcase beacon-preview-display-location
+            ('dedicated-frame
+             (setq beacon-preview--preview-frame nil)
+             (delete-frame preview-frame t))
+            ('shared-dedicated-frame
+             (make-frame-invisible preview-frame))))))))
+
 (defun beacon-preview--show-preview-buffer-in-dedicated-frame (preview-buffer)
   "Display PREVIEW-BUFFER in the current source buffer's dedicated preview frame."
   (or (get-buffer-window preview-buffer t)
@@ -1845,7 +1870,28 @@ next block."
     ((or 'dedicated-frame 'shared-dedicated-frame)
      (beacon-preview--show-preview-buffer-in-dedicated-frame preview-buffer))
     (_
-     (display-buffer preview-buffer beacon-preview-display-buffer-action))))
+      (display-buffer preview-buffer beacon-preview-display-buffer-action))))
+
+(defun beacon-preview--cleanup-preview-on-source-kill ()
+  "Close the tracked preview when its source buffer is being killed."
+  (when-let* ((preview-buffer beacon-preview--xwidget-buffer)
+              ((buffer-live-p preview-buffer)))
+    (beacon-preview--cleanup-preview-frame (current-buffer) preview-buffer)
+    (with-current-buffer preview-buffer
+      (setq beacon-preview--source-buffer nil))
+    (setq beacon-preview--xwidget-buffer nil)
+    (kill-buffer preview-buffer)))
+
+(defun beacon-preview--cleanup-source-on-preview-kill ()
+  "Clear source-side preview bookkeeping when a tracked preview buffer is killed."
+  (let ((preview-buffer (current-buffer))
+        (source-buffer beacon-preview--source-buffer))
+    (setq beacon-preview--source-buffer nil)
+    (when (buffer-live-p source-buffer)
+      (beacon-preview--cleanup-preview-frame source-buffer preview-buffer)
+      (with-current-buffer source-buffer
+        (when (eq beacon-preview--xwidget-buffer preview-buffer)
+          (setq beacon-preview--xwidget-buffer nil))))))
 
 (defun beacon-preview--tracked-preview-window (&optional preview-buffer)
   "Return a live window already showing PREVIEW-BUFFER, or nil."
@@ -2705,6 +2751,7 @@ falls back to the current heading anchor."
         (add-hook 'after-revert-hook #'beacon-preview--after-revert nil t)
         (add-hook 'after-set-visited-file-name-hook
                   #'beacon-preview--after-set-visited-file-name nil t)
+        (add-hook 'kill-buffer-hook #'beacon-preview--cleanup-preview-on-source-kill nil t)
         (add-hook 'after-change-functions #'beacon-preview--record-edit nil t)
         (add-hook 'post-command-hook #'beacon-preview--post-command nil t)
         (beacon-preview--maybe-auto-start))

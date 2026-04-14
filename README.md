@@ -357,6 +357,11 @@ preview too. For example:
 If the source buffer is later renamed, the tracked preview buffer name follows
 that rename as well.
 
+If the source buffer is killed, its tracked preview buffer is closed too so the
+package does not leave behind an orphaned preview with no live source buffer.
+If you kill the preview buffer first, the source buffer forgets that preview and
+any package-managed dedicated preview frame for it is cleaned up too.
+
 Use:
 
 ```elisp
