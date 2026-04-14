@@ -1144,16 +1144,23 @@
 
 (ert-deftest beacon-preview-xwidget-callback-runs-pending-sync-after-load-finished ()
   (let ((preview-buffer (generate-new-buffer " *beacon-preview-xwidget*"))
+        (source-buffer (generate-new-buffer " *beacon-preview-source*"))
         (executed nil)
         (scheduled nil)
         (last-input-event '(xwidget-event nil nil "load-finished")))
     (unwind-protect
-        (with-current-buffer preview-buffer
-          (setq beacon-preview--pending-sync-script "window.scrollTo(0, 10);")
+        (progn
+          (with-current-buffer source-buffer
+            (setq-local buffer-file-name "/tmp/example.md"))
+          (with-current-buffer preview-buffer
+            (setq beacon-preview--source-buffer source-buffer)
+            (setq beacon-preview--pending-sync-script "window.scrollTo(0, 10);"))
           (cl-letf (((symbol-function 'xwidget-buffer)
                      (lambda (_xwidget) preview-buffer))
                     ((symbol-function 'xwidget-webkit-callback)
-                     (lambda (_xwidget _event-type) nil))
+                     (lambda (_xwidget _event-type)
+                       (with-current-buffer preview-buffer
+                         (rename-buffer "*xwidget-webkit: README*" t))))
                     ((symbol-function 'run-at-time)
                      (lambda (_delay _repeat fn)
                        (setq scheduled fn)
@@ -1162,11 +1169,15 @@
                      (lambda (_xwidget script)
                        (setq executed script))))
             (beacon-preview--xwidget-callback 'dummy 'load-changed)
+            (should (string= (buffer-name preview-buffer)
+                             "*beacon-preview: example.md*"))
             (should scheduled)
             (funcall scheduled)
             (should (string= executed "window.scrollTo(0, 10);"))
-            (should-not beacon-preview--pending-sync-script)))
-      (kill-buffer preview-buffer))))
+            (with-current-buffer preview-buffer
+              (should-not beacon-preview--pending-sync-script))))
+      (kill-buffer preview-buffer)
+      (kill-buffer source-buffer))))
 
 (ert-deftest beacon-preview-xwidget-callback-ignores-stale-sync-timer ()
   (let ((preview-buffer (generate-new-buffer " *beacon-preview-xwidget*"))
@@ -1255,7 +1266,7 @@
       (when (buffer-live-p source-buffer)
         (kill-buffer source-buffer))
       (when (buffer-live-p preview-buffer)
-        (kill-buffer preview-buffer)))))
+        (kill-buffer preview-buffer))))
 
 (ert-deftest beacon-preview-target-source-position-prefers-previous-block-on-blank-line ()
   (with-temp-buffer
@@ -1376,11 +1387,26 @@
       (unwind-protect
           (progn
             (beacon-preview--label-preview-buffer preview-buffer source-buffer)
-            (should (string= (buffer-name preview-buffer)
-                             "*beacon-preview: example.md*"))
-            (with-current-buffer preview-buffer
-              (should (eq beacon-preview--source-buffer source-buffer))))
+             (should (string= (buffer-name preview-buffer)
+                              "*beacon-preview: example.md*"))
+             (with-current-buffer preview-buffer
+               (should (eq beacon-preview--source-buffer source-buffer))))
         (kill-buffer preview-buffer)))))
+
+(ert-deftest beacon-preview-preview-buffer-name-prefers-project-relative-path ()
+  (let ((file "/tmp/worktrees/demo/docs/notes.md"))
+    (with-temp-buffer
+      (setq-local buffer-file-name file)
+      (cl-letf (((symbol-function 'project-current)
+                 (lambda (&optional _maybe-prompt dir)
+                   (should (string= dir "/tmp/worktrees/demo/docs/"))
+                   'project))
+                ((symbol-function 'project-root)
+                 (lambda (_project)
+                   "/tmp/worktrees/demo/")))
+        (should (string=
+                 (beacon-preview--preview-buffer-name (current-buffer))
+                 "*beacon-preview: demo/docs/notes.md*"))))))
 
 (ert-deftest beacon-preview-build-and-refresh-reopens-when-preview-buffer-is-dead ()
   (let* ((tmp-root (make-temp-file "beacon-preview-ert-" t))
@@ -1479,6 +1505,35 @@
         (kill-buffer preview-buffer)
         (kill-buffer other-buffer)))))
 
+(ert-deftest beacon-preview-build-and-refresh-does-not-reuse-hidden-live-session-by-default ()
+  (with-temp-buffer
+    (let ((preview-buffer (generate-new-buffer " *beacon-preview-live*"))
+          (goto-url nil)
+          (browse-called nil))
+      (unwind-protect
+          (progn
+            (set-window-buffer (selected-window) (current-buffer))
+            (setq beacon-preview--xwidget-buffer preview-buffer)
+            (let ((beacon-preview-reveal-hidden-preview-window nil))
+              (cl-letf (((symbol-function 'beacon-preview--xwidget-available-p)
+                         (lambda () t))
+                        ((symbol-function 'get-buffer-window)
+                         (lambda (_buffer &optional _all-frames) nil))
+                        ((symbol-function 'xwidget-webkit-current-session)
+                         (lambda () 'live-session))
+                        ((symbol-function 'beacon-preview--show-preview-buffer)
+                         (lambda (_buffer)
+                           (ert-fail "Hidden preview should not be shown by default")))
+                        ((symbol-function 'xwidget-webkit-goto-url)
+                         (lambda (url) (setq goto-url url)))
+                        ((symbol-function 'xwidget-webkit-browse-url)
+                         (lambda (&rest _args)
+                           (setq browse-called t))))
+                (beacon-preview--open-preview "/tmp/sample.html" nil nil)
+                (should-not goto-url)
+                (should-not browse-called)))))
+        (kill-buffer preview-buffer)))))
+
 (ert-deftest beacon-preview--open-preview-records-created-preview-buffer ()
   (with-temp-buffer
     (let ((created-buffer (generate-new-buffer " *beacon-preview-created*")))
@@ -1522,7 +1577,7 @@
                         (lambda (url) (setq goto-url url)))
                        ((symbol-function 'xwidget-webkit-browse-url)
                         (lambda (&rest _args) (setq browse-called t))))
-              (beacon-preview--open-preview "/tmp/sample.html")
+              (beacon-preview--open-preview "/tmp/sample.html" nil t)
               (should (string-match-p "sample\\.html$" goto-url))
               (should-not browse-called)))
         (kill-buffer preview-buffer)))))
@@ -1802,6 +1857,94 @@
                          (selected-window))))
               (beacon-preview-switch-to-preview)
               (should (eq displayed preview-buffer))))
+        (kill-buffer preview-buffer)))))
+
+(ert-deftest beacon-preview-switch-to-preview-starts-preview-when-needed ()
+  (with-temp-buffer
+    (let ((started nil))
+      (cl-letf (((symbol-function 'beacon-preview-build-and-open)
+                 (lambda ()
+                   (setq started t))))
+        (beacon-preview-switch-to-preview)
+        (should started)))))
+
+(ert-deftest beacon-preview-toggle-preview-display-shows-hidden-preview ()
+  (with-temp-buffer
+    (let ((preview-buffer (generate-new-buffer " *beacon-preview-switch*"))
+          (displayed nil))
+      (unwind-protect
+          (progn
+            (setq beacon-preview--xwidget-buffer preview-buffer)
+            (cl-letf (((symbol-function 'get-buffer-window)
+                       (lambda (&rest _args) nil))
+                      ((symbol-function 'display-buffer)
+                       (lambda (buffer &optional _action)
+                         (setq displayed buffer)
+                         (selected-window))))
+              (beacon-preview-toggle-preview-display)
+              (should (eq displayed preview-buffer))))
+        (kill-buffer preview-buffer)))))
+
+(ert-deftest beacon-preview-toggle-preview-display-starts-preview-when-needed ()
+  (with-temp-buffer
+    (let ((started nil))
+      (cl-letf (((symbol-function 'beacon-preview-build-and-open)
+                 (lambda ()
+                   (setq started t))))
+        (beacon-preview-toggle-preview-display)
+        (should started)))))
+
+(ert-deftest beacon-preview-toggle-preview-display-hides-visible-window ()
+  (with-temp-buffer
+    (let ((preview-buffer (generate-new-buffer " *beacon-preview-switch*"))
+          (preview-window 'preview-window)
+          (deleted nil))
+      (unwind-protect
+          (progn
+            (setq beacon-preview--xwidget-buffer preview-buffer)
+            (cl-letf (((symbol-function 'get-buffer-window)
+                       (lambda (&rest _args) preview-window))
+                      ((symbol-function 'window-live-p)
+                       (lambda (window) (eq window preview-window)))
+                      ((symbol-function 'window-frame)
+                       (lambda (_window) 'source-frame))
+                      ((symbol-function 'beacon-preview--live-preview-frame)
+                       (lambda (&optional _source-buffer) nil))
+                      ((symbol-function 'delete-window)
+                       (lambda (window) (setq deleted window)))
+                      ((symbol-function 'make-frame-invisible)
+                       (lambda (&rest _args)
+                         (ert-fail "Side-window preview should not hide a frame"))))
+              (beacon-preview-toggle-preview-display)
+              (should (eq deleted preview-window))))
+        (kill-buffer preview-buffer)))))
+
+(ert-deftest beacon-preview-toggle-preview-display-hides-dedicated-frame ()
+  (with-temp-buffer
+    (let ((preview-buffer (generate-new-buffer " *beacon-preview-switch*"))
+          (preview-window 'preview-window)
+          (preview-frame 'preview-frame)
+          (hidden nil))
+      (unwind-protect
+          (progn
+            (setq beacon-preview--xwidget-buffer preview-buffer)
+            (cl-letf (((symbol-function 'get-buffer-window)
+                       (lambda (&rest _args) preview-window))
+                      ((symbol-function 'window-live-p)
+                       (lambda (window) (eq window preview-window)))
+                      ((symbol-function 'window-frame)
+                       (lambda (_window) preview-frame))
+                      ((symbol-function 'beacon-preview--live-preview-frame)
+                       (lambda (&optional _source-buffer) preview-frame))
+                      ((symbol-function 'frame-live-p)
+                       (lambda (frame) (eq frame preview-frame)))
+                      ((symbol-function 'make-frame-invisible)
+                       (lambda (frame) (setq hidden frame)))
+                      ((symbol-function 'delete-window)
+                       (lambda (&rest _args)
+                         (ert-fail "Dedicated preview should hide its frame"))))
+              (beacon-preview-toggle-preview-display)
+              (should (eq hidden preview-frame))))
         (kill-buffer preview-buffer)))))
 
 (ert-deftest beacon-preview-tracks-preview-buffers-per-source-buffer ()
@@ -2108,6 +2251,8 @@
               #'beacon-preview-build-and-refresh))
   (should (eq (lookup-key beacon-preview-command-map (kbd "s"))
               #'beacon-preview-apply-behavior-style))
+  (should (eq (lookup-key beacon-preview-command-map (kbd "t"))
+              #'beacon-preview-toggle-preview-display))
   (should (eq (lookup-key beacon-preview-command-map (kbd "p"))
               #'beacon-preview-sync-source-to-preview))
   (should (eq (lookup-key beacon-preview-command-map (kbd "d"))

@@ -17,18 +17,34 @@ It focuses on:
 - Pandoc available in `PATH`, or configured explicitly from Emacs
 - Python 3
 
+## Installation
+
+Until this package is published on MELPA, install it directly from the
+repository with `package-vc`:
+
+```elisp
+(package-vc-install "https://github.com/matoi/beacon-preview")
+```
+
+For a local checkout, add the `lisp/` directory to `load-path` and require the
+package:
+
+```elisp
+(add-to-list 'load-path "/path/to/beacon-preview/lisp")
+(require 'beacon-preview)
+```
+
 ## Main Files
 
-- [lisp/beacon-preview.el](/Users/matoi/Development/beacon-preview/lisp/beacon-preview.el)
-- [scripts/build_preview.py](/Users/matoi/Development/beacon-preview/scripts/build_preview.py)
-- [scripts/beaconify_html.py](/Users/matoi/Development/beacon-preview/scripts/beaconify_html.py)
+- [lisp/beacon-preview.el](lisp/beacon-preview.el)
+- [scripts/build_preview.py](scripts/build_preview.py)
+- [scripts/beaconify_html.py](scripts/beaconify_html.py)
 
 ## Emacs Setup
 
-Load the mode and enable it for Markdown and Org buffers:
+Enable the mode for Markdown and Org buffers:
 
 ```elisp
-(load-file "/Users/matoi/Development/beacon-preview/lisp/beacon-preview.el")
 (add-hook 'markdown-mode-hook #'beacon-preview-mode)
 (add-hook 'gfm-mode-hook #'beacon-preview-mode)
 (add-hook 'org-mode-hook #'beacon-preview-mode)
@@ -175,11 +191,11 @@ behavior style instead of setting the individual variables one by one:
 
 Available named styles are:
 
-- `default`
-- `live`
-- `visible`
-- `live-visible`
-- `preserve`
+- `default` - refresh follows the current block, without live display-follow or hidden-preview reveal
+- `live` - `default` plus live following for source window scrolling/recentering
+- `visible` - `default` plus automatic re-reveal of a hidden preview display during source-driven updates
+- `live-visible` - combines both live display-follow and hidden-preview reveal
+- `preserve` - refresh rebuilds while preserving the current preview scroll position
 
 You can also use a custom style plist when you want one explicit bundle:
 
@@ -250,6 +266,7 @@ automatically start preview unless you opt in.
 - `M-x beacon-preview-build-and-refresh`
 - `M-x beacon-preview-apply-behavior-style`
 - `M-x beacon-preview-switch-to-preview`
+- `M-x beacon-preview-toggle-preview-display`
 - `M-x beacon-preview-jump-to-current-heading`
 - `M-x beacon-preview-jump-to-current-block`
 - `M-x beacon-preview-jump-to-anchor`
@@ -267,6 +284,7 @@ automatically start preview unless you opt in.
 - `C-c C-b o` for `beacon-preview-build-and-open`
 - `C-c C-b r` for `beacon-preview-build-and-refresh`
 - `C-c C-b s` for `beacon-preview-apply-behavior-style`
+- `C-c C-b t` for `beacon-preview-toggle-preview-display`
 - `C-c C-b p` for `beacon-preview-sync-source-to-preview`
 - `C-c C-b j` for `beacon-preview-jump-to-current-heading`
 - `C-c C-b b` for `beacon-preview-jump-to-current-block`
@@ -278,10 +296,12 @@ automatically start preview unless you opt in.
 
 ## Preview Buffers
 
-Preview buffers are renamed to include the source filename, for example:
+Preview buffers are renamed to include a short source label. When the file is
+inside a project, that label becomes project-relative so same-named files are
+easier to distinguish, for example:
 
 ```text
-*beacon-preview: notes.md*
+*beacon-preview: beacon-preview/docs/notes.md*
 ```
 
 Use:
@@ -289,7 +309,17 @@ Use:
 ```elisp
 (beacon-preview-switch-to-preview)
 ```
-to jump back to the tracked preview for the current source buffer.
+to jump back to the tracked preview for the current source buffer. If the
+current source buffer does not have a live preview yet, this command starts one
+first.
+
+Use:
+
+```elisp
+(beacon-preview-toggle-preview-display)
+```
+to toggle that preview display between shown and hidden. If the current source
+buffer does not have a live preview yet, this command starts one first.
 
 ## HTML Pipeline
 
