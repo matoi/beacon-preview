@@ -1151,6 +1151,7 @@
     (unwind-protect
         (progn
           (with-current-buffer source-buffer
+            (rename-buffer "example.md" t)
             (setq-local buffer-file-name "/tmp/example.md"))
           (with-current-buffer preview-buffer
             (setq beacon-preview--source-buffer source-buffer)
@@ -1385,28 +1386,50 @@
     (let ((source-buffer (current-buffer))
           (preview-buffer (generate-new-buffer " *preview*")))
       (unwind-protect
-          (progn
-            (beacon-preview--label-preview-buffer preview-buffer source-buffer)
+           (progn
+             (beacon-preview--label-preview-buffer preview-buffer source-buffer)
              (should (string= (buffer-name preview-buffer)
-                              "*beacon-preview: example.md*"))
+                              "*beacon-preview: source-buffer*"))
              (with-current-buffer preview-buffer
                (should (eq beacon-preview--source-buffer source-buffer))))
         (kill-buffer preview-buffer)))))
 
-(ert-deftest beacon-preview-preview-buffer-name-prefers-project-relative-path ()
-  (let ((file "/tmp/worktrees/demo/docs/notes.md"))
-    (with-temp-buffer
-      (setq-local buffer-file-name file)
-      (cl-letf (((symbol-function 'project-current)
-                 (lambda (&optional _maybe-prompt dir)
-                   (should (string= dir "/tmp/worktrees/demo/docs/"))
-                   'project))
-                ((symbol-function 'project-root)
-                 (lambda (_project)
-                   "/tmp/worktrees/demo/")))
-        (should (string=
-                 (beacon-preview--preview-buffer-name (current-buffer))
-                 "*beacon-preview: demo/docs/notes.md*"))))))
+(ert-deftest beacon-preview-preview-buffer-name-uses-source-buffer-name ()
+  (with-temp-buffer
+    (rename-buffer "notes.md<docs>" t)
+    (setq-local buffer-file-name "/tmp/worktrees/demo/docs/notes.md")
+    (should (string=
+             (beacon-preview--preview-buffer-name (current-buffer))
+             "*beacon-preview: notes.md<docs>*"))))
+
+(ert-deftest beacon-preview-rename-buffer-updates-tracked-preview-name ()
+  (with-temp-buffer
+    (rename-buffer "notes.md" t)
+    (let ((source-buffer (current-buffer))
+          (preview-buffer (generate-new-buffer " *preview*")))
+      (unwind-protect
+          (progn
+            (setq-local beacon-preview--xwidget-buffer preview-buffer)
+            (beacon-preview--label-preview-buffer preview-buffer source-buffer)
+            (rename-buffer "notes.md<project>" t)
+            (should (string= (buffer-name preview-buffer)
+                             "*beacon-preview: notes.md<project>*")))
+        (kill-buffer preview-buffer)))))
+
+(ert-deftest beacon-preview-after-set-visited-file-name-updates-tracked-preview-name ()
+  (with-temp-buffer
+    (rename-buffer "notes.md" t)
+    (let ((source-buffer (current-buffer))
+          (preview-buffer (generate-new-buffer " *preview*")))
+      (unwind-protect
+          (progn
+            (setq-local beacon-preview--xwidget-buffer preview-buffer)
+            (beacon-preview--label-preview-buffer preview-buffer source-buffer)
+            (rename-buffer "notes.org" t)
+            (beacon-preview--after-set-visited-file-name)
+            (should (string= (buffer-name preview-buffer)
+                             "*beacon-preview: notes.org*")))
+        (kill-buffer preview-buffer)))))
 
 (ert-deftest beacon-preview-build-and-refresh-reopens-when-preview-buffer-is-dead ()
   (let* ((tmp-root (make-temp-file "beacon-preview-ert-" t))

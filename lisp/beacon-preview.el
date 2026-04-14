@@ -25,7 +25,6 @@
 (require 'subr-x)
 (require 'seq)
 (require 'json)
-(require 'project)
 (require 'url-util)
 
 (defgroup beacon-preview nil
@@ -1733,27 +1732,10 @@ next block."
       (when (beacon-preview--display-follow-state-changed-p window)
         (beacon-preview--schedule-display-follow)))))
 
-(defun beacon-preview--project-label-for-file (file)
-  "Return a concise project-relative label for FILE, or nil."
-  (when-let* ((project (project-current nil (file-name-directory file)))
-              (root (project-root project))
-              ((file-in-directory-p file root))
-              (project-name
-               (file-name-nondirectory
-                (directory-file-name (expand-file-name root))))
-              (relative-path (file-relative-name file root)))
-    (format "%s/%s" project-name relative-path)))
-
 (defun beacon-preview--preview-buffer-name (&optional source-buffer)
   "Return the desired preview buffer name for SOURCE-BUFFER."
   (let* ((buffer (or source-buffer (current-buffer)))
-         (file (buffer-file-name buffer))
-         (label (cond
-                 ((not file)
-                  (buffer-name buffer))
-                 ((beacon-preview--project-label-for-file file))
-                 (t
-                  (file-name-nondirectory file)))))
+         (label (buffer-name buffer)))
     (format "*beacon-preview: %s*" label)))
 
 (defun beacon-preview--label-preview-buffer (preview-buffer source-buffer)
@@ -1762,6 +1744,26 @@ next block."
     (with-current-buffer preview-buffer
       (setq beacon-preview--source-buffer source-buffer)
       (rename-buffer (beacon-preview--preview-buffer-name source-buffer) t))))
+
+(defun beacon-preview--refresh-preview-buffer-label (&optional source-buffer)
+  "Rename SOURCE-BUFFER's tracked preview buffer to match the source label."
+  (when-let* ((buffer (or source-buffer (current-buffer)))
+              ((buffer-live-p buffer))
+              (preview-buffer
+               (buffer-local-value 'beacon-preview--xwidget-buffer buffer))
+              ((buffer-live-p preview-buffer)))
+    (beacon-preview--label-preview-buffer preview-buffer buffer)))
+
+(defun beacon-preview--after-set-visited-file-name ()
+  "Refresh the tracked preview name after the current source buffer changes file."
+  (beacon-preview--refresh-preview-buffer-label))
+
+(defun beacon-preview--after-rename-buffer (&rest _args)
+  "Refresh the tracked preview name after a source buffer is renamed."
+  (beacon-preview--refresh-preview-buffer-label))
+
+(unless (advice-member-p #'beacon-preview--after-rename-buffer 'rename-buffer)
+  (advice-add 'rename-buffer :after #'beacon-preview--after-rename-buffer))
 
 (defun beacon-preview--dedicated-frame-parameters ()
   "Return frame parameters for a dedicated beacon preview frame."
@@ -2569,11 +2571,15 @@ falls back to the current heading anchor."
         (setq beacon-preview--edited-positions nil)
         (add-hook 'after-save-hook #'beacon-preview--after-save nil t)
         (add-hook 'after-revert-hook #'beacon-preview--after-revert nil t)
+        (add-hook 'after-set-visited-file-name-hook
+                  #'beacon-preview--after-set-visited-file-name nil t)
         (add-hook 'after-change-functions #'beacon-preview--record-edit nil t)
         (add-hook 'post-command-hook #'beacon-preview--post-command nil t)
         (beacon-preview--maybe-auto-start))
     (remove-hook 'after-save-hook #'beacon-preview--after-save t)
     (remove-hook 'after-revert-hook #'beacon-preview--after-revert t)
+    (remove-hook 'after-set-visited-file-name-hook
+                 #'beacon-preview--after-set-visited-file-name t)
     (remove-hook 'after-change-functions #'beacon-preview--record-edit t)
     (remove-hook 'post-command-hook #'beacon-preview--post-command t)
     (when (timerp beacon-preview--display-follow-timer)

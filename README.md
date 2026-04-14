@@ -296,13 +296,16 @@ automatically start preview unless you opt in.
 
 ## Preview Buffers
 
-Preview buffers are renamed to include a short source label. When the file is
-inside a project, that label becomes project-relative so same-named files are
-easier to distinguish, for example:
+Preview buffers are renamed to follow the current source buffer name, so any
+buffer naming you already use for disambiguation is carried over to the
+preview too. For example:
 
 ```text
-*beacon-preview: beacon-preview/docs/notes.md*
+*beacon-preview: notes.md<docs>*
 ```
+
+If the source buffer is later renamed, the tracked preview buffer name follows
+that rename as well.
 
 Use:
 
