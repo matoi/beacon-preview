@@ -284,6 +284,9 @@ is disabled.
 
 For the settings most likely to be adjusted while working:
 
+Runtime commands below update the **current source buffer** only. Use Customize
+or your init file for persistent global defaults.
+
 | Concern | Persistent variable | Runtime command |
 | --- | --- | --- |
 | Preview opens in side window, per-preview frame, or shared frame | `beacon-preview-display-location` | — |

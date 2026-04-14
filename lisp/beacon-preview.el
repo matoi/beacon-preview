@@ -252,18 +252,34 @@ returned as normalized plists."
           beacon-preview--behavior-style-presets))
         spec)))
 
-(defun beacon-preview--set-behavior-style (style)
-  "Apply behavior STYLE to the coordinated preview behavior settings."
+(defun beacon-preview--set-option-value (symbol value &optional local)
+  "Set SYMBOL to VALUE, optionally only in the current buffer when LOCAL."
+  (if local
+      (set (make-local-variable symbol) value)
+    (set-default symbol value)))
+
+(defun beacon-preview--set-behavior-style (style &optional local)
+  "Apply behavior STYLE to the coordinated preview behavior settings.
+
+When LOCAL is non-nil, update only the current buffer's local behavior values."
   (let ((spec (beacon-preview--behavior-style-spec style)))
     (let ((beacon-preview--applying-behavior-style t))
-      (setq beacon-preview-refresh-jump-behavior
-            (plist-get spec :refresh-jump-behavior))
-      (setq beacon-preview-follow-window-display-changes
-            (plist-get spec :follow-window-display-changes))
-      (setq beacon-preview-reveal-hidden-preview-window
-            (plist-get spec :reveal-hidden-preview-window)))
-    (setq beacon-preview-behavior-style
-          (beacon-preview--behavior-style-value spec))))
+      (beacon-preview--set-option-value
+       'beacon-preview-refresh-jump-behavior
+       (plist-get spec :refresh-jump-behavior)
+       local)
+      (beacon-preview--set-option-value
+       'beacon-preview-follow-window-display-changes
+       (plist-get spec :follow-window-display-changes)
+       local)
+      (beacon-preview--set-option-value
+       'beacon-preview-reveal-hidden-preview-window
+       (plist-get spec :reveal-hidden-preview-window)
+       local))
+    (beacon-preview--set-option-value
+     'beacon-preview-behavior-style
+     (beacon-preview--behavior-style-value spec)
+     local)))
 
 (defun beacon-preview--behavior-style-setter (symbol value)
   "Custom setter for SYMBOL using behavior style VALUE."
@@ -271,20 +287,27 @@ returned as normalized plists."
   (unless beacon-preview--applying-behavior-style
     (beacon-preview--set-behavior-style value)))
 
-(defun beacon-preview--sync-behavior-style ()
-  "Update `beacon-preview-behavior-style' to match current behavior settings."
+(defun beacon-preview--sync-behavior-style (&optional local)
+  "Update `beacon-preview-behavior-style' to match current behavior settings.
+
+When LOCAL is non-nil, update only the current buffer's local style value."
   (unless beacon-preview--applying-behavior-style
-    (setq beacon-preview-behavior-style
-          (beacon-preview--behavior-style-value
-           (beacon-preview--current-behavior-style-spec)))))
+    (beacon-preview--set-option-value
+     'beacon-preview-behavior-style
+     (beacon-preview--behavior-style-value
+      (beacon-preview--current-behavior-style-spec))
+     local)))
 
 ;;;###autoload
-(defun beacon-preview-apply-behavior-style (style)
+(defun beacon-preview-apply-behavior-style (style &optional local)
   "Apply beacon preview behavior STYLE.
 
 STYLE may be one of the named presets `default', `live', `visible',
 `live-visible', or `preserve', or an explicit plist accepted by
-`beacon-preview-behavior-style'."
+`beacon-preview-behavior-style'.
+
+When LOCAL is non-nil, apply STYLE only in the current buffer. Interactive use
+applies the style locally to the current buffer."
   (interactive
    (list
     (intern
@@ -292,8 +315,11 @@ STYLE may be one of the named presets `default', `live', `visible',
       "Behavior style: "
       '("default" "live" "visible" "live-visible" "preserve")
       nil
-      t))))
-  (beacon-preview--set-behavior-style style)
+      t))
+    t))
+  (beacon-preview--set-behavior-style
+   style
+   (or local (called-interactively-p 'interactive)))
   (message "[beacon-preview] behavior style: %S"
            beacon-preview-behavior-style))
 
@@ -439,11 +465,13 @@ it."
 (defun beacon-preview-toggle-refresh-jump-behavior ()
   "Toggle refresh jumping between block-following and position-preserving modes."
   (interactive)
-  (setq beacon-preview-refresh-jump-behavior
-        (if (eq beacon-preview-refresh-jump-behavior 'block)
-            'preserve
-          'block))
-  (beacon-preview--sync-behavior-style)
+  (beacon-preview--set-option-value
+   'beacon-preview-refresh-jump-behavior
+   (if (eq beacon-preview-refresh-jump-behavior 'block)
+       'preserve
+     'block)
+   t)
+  (beacon-preview--sync-behavior-style t)
   (message "[beacon-preview] refresh jump behavior: %s"
            beacon-preview-refresh-jump-behavior))
 
@@ -454,11 +482,13 @@ it."
 With prefix ARG, enable display following when ARG is positive, otherwise
  disable it."
   (interactive "P")
-  (setq beacon-preview-follow-window-display-changes
-        (if arg
-            (> (prefix-numeric-value arg) 0)
-          (not beacon-preview-follow-window-display-changes)))
-  (beacon-preview--sync-behavior-style)
+  (beacon-preview--set-option-value
+   'beacon-preview-follow-window-display-changes
+   (if arg
+       (> (prefix-numeric-value arg) 0)
+     (not beacon-preview-follow-window-display-changes))
+   t)
+  (beacon-preview--sync-behavior-style t)
   (message "[beacon-preview] follow window display changes %s"
            (if beacon-preview-follow-window-display-changes
                "enabled"
@@ -472,11 +502,13 @@ With prefix ARG, enable foregrounding when ARG is positive, otherwise disable
 it. Explicit preview-display commands still show the preview window regardless
 of this setting."
   (interactive "P")
-  (setq beacon-preview-reveal-hidden-preview-window
-        (if arg
-            (> (prefix-numeric-value arg) 0)
-          (not beacon-preview-reveal-hidden-preview-window)))
-  (beacon-preview--sync-behavior-style)
+  (beacon-preview--set-option-value
+   'beacon-preview-reveal-hidden-preview-window
+   (if arg
+       (> (prefix-numeric-value arg) 0)
+     (not beacon-preview-reveal-hidden-preview-window))
+   t)
+  (beacon-preview--sync-behavior-style t)
   (message "[beacon-preview] reveal hidden preview window %s"
            (if beacon-preview-reveal-hidden-preview-window
                "enabled"
