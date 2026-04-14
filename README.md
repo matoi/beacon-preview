@@ -50,6 +50,39 @@ Enable the mode for Markdown and Org buffers:
 (add-hook 'org-mode-hook #'beacon-preview-mode)
 ```
 
+If you want a ready-to-paste `init.el` example, start with:
+
+```elisp
+(use-package beacon-preview
+  :vc (:url "https://github.com/matoi/beacon-preview")
+  :hook ((markdown-mode . beacon-preview-mode)
+         (gfm-mode . beacon-preview-mode)
+         (org-mode . beacon-preview-mode))
+  :custom
+  (beacon-preview-behavior-style 'default)
+  (beacon-preview-display-location 'side-window))
+```
+
+A slightly more opinionated example for daily use might look like:
+
+```elisp
+(use-package beacon-preview
+  :vc (:url "https://github.com/matoi/beacon-preview")
+  :hook ((markdown-mode . beacon-preview-mode)
+         (gfm-mode . beacon-preview-mode)
+         (org-mode . beacon-preview-mode))
+  :bind
+  (:map beacon-preview-mode-map
+        ("C-c b o" . beacon-preview-build-and-open)
+        ("C-c b t" . beacon-preview-toggle-preview-display)
+        ("C-c b p" . beacon-preview-sync-source-to-preview))
+  :custom
+  (beacon-preview-behavior-style 'default)
+  (beacon-preview-display-location 'side-window)
+  (beacon-preview-auto-start-on-enable nil)
+  (beacon-preview-pandoc-command "pandoc"))
+```
+
 `beacon-preview` is intentionally xwidget-only. If Emacs was built without
 xwidgets, or if you run it outside a graphical session, preview commands fail
 with an explanatory error instead of a low-level `void-function` style error.
