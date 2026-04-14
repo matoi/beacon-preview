@@ -123,13 +123,17 @@ Open a Markdown or Org buffer and run:
 
 This will:
 
-- generate preview HTML from the current file
+- generate preview HTML from the current buffer
 - write preview artifacts into an internal temporary directory
 - open the generated HTML in xwidget
 - track the preview buffer for the current source buffer
 
 If no preview exists yet, this command creates one. If a tracked preview already
 exists for the source buffer, later refreshes reuse it.
+
+This also works for Markdown and Org buffers that are not visiting a file yet:
+the current buffer contents are written to an internal temporary snapshot before
+running the preview build.
 
 After that, use:
 

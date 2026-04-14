@@ -673,6 +673,32 @@
           (kill-buffer (get-file-buffer source-file))))
       (delete-directory tmp-root t))))
 
+(ert-deftest beacon-preview-build-current-file-creates-temp-artifacts-for-unvisited-buffer ()
+  (let* ((tmp-root (make-temp-file "beacon-preview-ert-" t))
+         (beacon-preview-temporary-root (expand-file-name "preview-root" tmp-root)))
+    (unwind-protect
+        (with-temp-buffer
+          (rename-buffer "draft-notes" t)
+          (setq-local major-mode 'markdown-mode)
+          (setq default-directory tmp-root)
+          (insert "# Title\n\n## Section\n\nBody\n")
+          (let ((artifacts (beacon-preview-build-current-file)))
+            (should (file-exists-p (plist-get artifacts :html)))
+            (should (file-exists-p (plist-get artifacts :manifest)))
+            (should (string-prefix-p
+                     (file-name-as-directory (expand-file-name beacon-preview-temporary-root))
+                     (plist-get artifacts :html)))
+            (should (string-match-p "draft-notes\\.html\\'" (plist-get artifacts :html)))
+            (should beacon-preview--manifest)))
+      (delete-directory tmp-root t))))
+
+(ert-deftest beacon-preview-build-current-file-errors-for-unvisited-unsupported-buffer ()
+  (with-temp-buffer
+    (setq-local major-mode 'text-mode)
+    (should-error
+     (beacon-preview-build-current-file)
+     :type 'user-error)))
+
 (ert-deftest beacon-preview-build-and-refresh-reopens-live-preview-at-current-heading ()
   (let* ((tmp-root (make-temp-file "beacon-preview-ert-" t))
          (source-file (expand-file-name "sample.md" tmp-root))
@@ -2339,6 +2365,19 @@
   (with-temp-buffer
     (setq-local major-mode 'markdown-mode)
     (setq-local buffer-file-name "/tmp/sample.md")
+    (let ((beacon-preview-auto-start-on-enable t)
+          (open-called nil))
+      (cl-letf (((symbol-function 'beacon-preview-build-and-open)
+                 (lambda () (setq open-called t)))
+                ((symbol-function 'beacon-preview--live-preview-p)
+                 (lambda () nil)))
+        (beacon-preview-mode 1)
+        (should open-called)
+        (beacon-preview-mode 0)))))
+
+(ert-deftest beacon-preview-mode-can-auto-start-preview-for-unvisited-buffer ()
+  (with-temp-buffer
+    (setq-local major-mode 'markdown-mode)
     (let ((beacon-preview-auto-start-on-enable t)
           (open-called nil))
       (cl-letf (((symbol-function 'beacon-preview-build-and-open)

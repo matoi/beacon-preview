@@ -418,6 +418,9 @@ You can use a named preset such as `default', `live', `visible',
 (defvar-local beacon-preview--edited-positions nil
   "Recently edited source positions collected since the last save/revert.")
 
+(defvar-local beacon-preview--ephemeral-source-id nil
+  "Stable per-buffer identifier used for unvisited preview artifacts.")
+
 (defvar beacon-preview-command-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "o") #'beacon-preview-build-and-open)
@@ -1860,31 +1863,123 @@ avoid reclaiming a preview display that is currently showing another buffer."
       (not (buffer-live-p preview-buffer))
       (beacon-preview--tracked-preview-window preview-buffer)))
 
-(defun beacon-preview--artifact-base-name (file)
-  "Return the artifact base name derived from FILE."
-  (file-name-base (expand-file-name file)))
+(defun beacon-preview--sanitized-buffer-base-name (&optional buffer)
+  "Return a filesystem-friendly artifact base name for BUFFER."
+  (let* ((buffer (or buffer (current-buffer)))
+         (raw-name (string-trim (buffer-name buffer)))
+         (sanitized (replace-regexp-in-string "[^[:alnum:]._+-]+" "-" raw-name)))
+    (or (and (not (string-empty-p sanitized))
+             (string-trim sanitized "-+" "-+"))
+        "buffer")))
 
-(defun beacon-preview--source-temp-directory (source-file)
-  "Return the internal temporary directory for SOURCE-FILE."
-  (let* ((source-path (expand-file-name source-file))
-         (source-hash (secure-hash 'sha1 source-path))
-         (base-name (beacon-preview--artifact-base-name source-file))
+(defun beacon-preview--source-artifact-base-name (&optional source)
+  "Return the artifact base name for SOURCE.
+
+SOURCE may be a buffer or a source file path string."
+  (let* ((buffer (and (bufferp source) source))
+         (source-file (cond
+                       ((stringp source) source)
+                       (buffer (buffer-file-name buffer))
+                       (t (buffer-file-name (current-buffer))))))
+    (if source-file
+        (file-name-base (expand-file-name source-file))
+      (beacon-preview--sanitized-buffer-base-name (or buffer (current-buffer))))))
+
+(defun beacon-preview--source-identity (&optional source)
+  "Return a stable identity string for SOURCE preview artifacts.
+
+SOURCE may be a buffer or a source file path string."
+  (let* ((buffer (and (bufferp source) source))
+         (source-file (cond
+                       ((stringp source) source)
+                       (buffer (buffer-file-name buffer))
+                       (t (buffer-file-name (current-buffer))))))
+    (if source-file
+        (expand-file-name source-file)
+      (with-current-buffer (or buffer (current-buffer))
+        (or beacon-preview--ephemeral-source-id
+            (setq-local
+             beacon-preview--ephemeral-source-id
+             (format "buffer:%s:%s:%s"
+                     (emacs-pid)
+                     (buffer-name (current-buffer))
+                     (substring
+                      (secure-hash 'sha1
+                                   (format "%s:%s:%s"
+                                           (buffer-name (current-buffer))
+                                           (float-time)
+                                           (random)))
+                      0
+                      12))))))))
+
+(defun beacon-preview--source-temp-directory (&optional source)
+  "Return the internal temporary directory for SOURCE preview artifacts."
+  (let* ((source-hash (secure-hash 'sha1 (beacon-preview--source-identity source)))
+         (base-name (beacon-preview--source-artifact-base-name source))
          (root (file-name-as-directory
-                (expand-file-name beacon-preview-temporary-root))))
+                 (expand-file-name beacon-preview-temporary-root))))
     (expand-file-name (format "%s-%s" base-name (substring source-hash 0 12))
                       root)))
 
-(defun beacon-preview--artifact-paths (source-file)
-  "Return plist of output artifact paths for SOURCE-FILE."
-  (let* ((base (beacon-preview--artifact-base-name source-file))
-         (output-dir (beacon-preview--source-temp-directory source-file)))
+(defun beacon-preview--artifact-paths (&optional source)
+  "Return plist of output artifact paths for SOURCE."
+  (let* ((base (beacon-preview--source-artifact-base-name source))
+         (output-dir (beacon-preview--source-temp-directory source)))
     (list :html (expand-file-name (format "%s.html" base) output-dir)
           :manifest (expand-file-name (format "%s.json" base) output-dir))))
 
-(defun beacon-preview--source-file ()
-  "Return the current buffer file or signal an error."
-  (or (buffer-file-name)
-      (user-error "Current buffer is not visiting a file")))
+(defun beacon-preview--snapshot-extension (&optional buffer)
+  "Return the temporary source snapshot extension appropriate for BUFFER."
+  (with-current-buffer (or buffer (current-buffer))
+    (cond
+     ((buffer-file-name)
+      (concat "." (or (file-name-extension (buffer-file-name)) "txt")))
+     ((derived-mode-p 'org-mode)
+      ".org")
+     ((derived-mode-p 'markdown-mode 'gfm-mode)
+      ".md")
+     (t
+      (user-error
+       "Current buffer is not visiting a file and mode %s is not supported for preview snapshots"
+       major-mode)))))
+
+(defun beacon-preview--prepare-build-source (&optional buffer)
+  "Return build metadata for BUFFER's current preview source.
+
+The returned plist includes:
+
+- `:input-file' for the file passed to the builder
+- `:output-dir' for generated artifacts
+- `:base-name' for output artifact naming
+- `:default-directory' for running the builder
+- `:ephemeral' when the input is a temporary buffer snapshot"
+  (let* ((buffer (or buffer (current-buffer)))
+         (source-file (buffer-file-name buffer))
+         (output-dir (beacon-preview--source-temp-directory buffer))
+         (base-name (beacon-preview--source-artifact-base-name buffer))
+         (default-dir (or (and source-file (file-name-directory source-file))
+                          default-directory)))
+    (make-directory output-dir t)
+    (if source-file
+        (list :input-file (expand-file-name source-file)
+              :output-dir output-dir
+              :base-name base-name
+              :default-directory default-dir
+              :ephemeral nil)
+      (let ((snapshot-file
+             (expand-file-name
+              (format "%s-source%s"
+                      base-name
+                      (beacon-preview--snapshot-extension buffer))
+              output-dir)))
+        (with-current-buffer buffer
+          (let ((coding-system-for-write 'utf-8-unix))
+            (write-region (point-min) (point-max) snapshot-file nil 'silent)))
+        (list :input-file snapshot-file
+              :output-dir output-dir
+              :base-name base-name
+              :default-directory default-dir
+              :ephemeral t)))))
 
 (defun beacon-preview--open-preview (file &optional anchor explicit)
   "Open FILE as a beacon preview in xwidget, optionally targeting ANCHOR.
@@ -2009,18 +2104,20 @@ it is currently hidden behind another buffer."
 
 ;;;###autoload
 (defun beacon-preview-build-current-file ()
-  "Build preview artifacts for the current source file.
+  "Build preview artifacts for the current source buffer.
 
 Returns a plist with `:html' and `:manifest' paths."
   (interactive)
-  (let* ((source-file (beacon-preview--source-file))
-         (default-directory (file-name-directory source-file))
-         (artifacts (beacon-preview--artifact-paths source-file))
+  (let* ((build-source (beacon-preview--prepare-build-source))
+         (source-file (plist-get build-source :input-file))
+         (default-directory (plist-get build-source :default-directory))
+         (artifacts (beacon-preview--artifact-paths))
          (html-path (plist-get artifacts :html))
          (manifest-path (plist-get artifacts :manifest))
+         (base-name (plist-get build-source :base-name))
          (builder-script (expand-file-name beacon-preview-builder-script))
          (output-buffer "*beacon-preview-build*")
-         (output-dir (beacon-preview--source-temp-directory source-file))
+         (output-dir (plist-get build-source :output-dir))
          exit-code)
     (unless (beacon-preview--command-available-p beacon-preview-python-command)
       (user-error "Python executable not found: %s" beacon-preview-python-command))
@@ -2036,15 +2133,17 @@ Returns a plist with `:html' and `:manifest' paths."
                output-buffer
                nil
                builder-script
-               "--input"
-               source-file
-               "--output-dir"
-               output-dir
-               "--pandoc"
-               beacon-preview-pandoc-command)
-            (file-missing
-             (user-error "Failed to start preview builder: %s"
-                         (error-message-string err)))))
+                "--input"
+                source-file
+                "--output-dir"
+                output-dir
+                "--name"
+                base-name
+                "--pandoc"
+                beacon-preview-pandoc-command)
+             (file-missing
+              (user-error "Failed to start preview builder: %s"
+                          (error-message-string err)))))
     (unless (and (integerp exit-code) (zerop exit-code))
       (pop-to-buffer output-buffer)
       (user-error "%s" (beacon-preview--build-error-message output-buffer)))
@@ -2079,11 +2178,10 @@ is already open for the current source buffer."
 (defun beacon-preview--maybe-auto-start ()
   "Automatically start preview for the current buffer when configured.
 
-Auto-start is limited to supported file-backed buffers and skips buffers that
-already have a live preview session."
+Auto-start is limited to supported source buffers and skips buffers that already
+have a live preview session."
   (when (and beacon-preview-auto-start-on-enable
              (beacon-preview--supported-source-mode-p)
-             (buffer-file-name)
              (not (beacon-preview--live-preview-p)))
     (beacon-preview-build-and-open)))
 
