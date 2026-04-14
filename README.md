@@ -280,6 +280,36 @@ in a supported source buffer:
 By default this is disabled, so opening a `.md` or `.org` file does not
 automatically start preview unless you opt in.
 
+## Preview Buffers
+
+Preview buffers are renamed to follow the current source buffer name, so any
+buffer naming you already use for disambiguation is carried over to the
+preview too. For example:
+
+```text
+*beacon-preview: notes.md<docs>*
+```
+
+If the source buffer is later renamed, the tracked preview buffer name follows
+that rename as well.
+
+Use:
+
+```elisp
+(beacon-preview-switch-to-preview)
+```
+to jump back to the tracked preview for the current source buffer. If the
+current source buffer does not have a live preview yet, this command starts one
+first.
+
+Use:
+
+```elisp
+(beacon-preview-toggle-preview-display)
+```
+to toggle that preview display between shown and hidden. If the current source
+buffer does not have a live preview yet, this command starts one first.
+
 ## Useful Commands
 
 - `M-x beacon-preview-mode` - enable or disable the minor mode in the current source buffer
@@ -314,33 +344,3 @@ automatically start preview unless you opt in.
 - `C-c C-b f` for `beacon-preview-toggle-refresh-jump-behavior`
 - `C-c C-b w` for `beacon-preview-toggle-follow-window-display-changes`
 - `C-c C-b v` for `beacon-preview-toggle-reveal-hidden-preview-window`
-
-## Preview Buffers
-
-Preview buffers are renamed to follow the current source buffer name, so any
-buffer naming you already use for disambiguation is carried over to the
-preview too. For example:
-
-```text
-*beacon-preview: notes.md<docs>*
-```
-
-If the source buffer is later renamed, the tracked preview buffer name follows
-that rename as well.
-
-Use:
-
-```elisp
-(beacon-preview-switch-to-preview)
-```
-to jump back to the tracked preview for the current source buffer. If the
-current source buffer does not have a live preview yet, this command starts one
-first.
-
-Use:
-
-```elisp
-(beacon-preview-toggle-preview-display)
-```
-to toggle that preview display between shown and hidden. If the current source
-buffer does not have a live preview yet, this command starts one first.
