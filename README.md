@@ -283,27 +283,27 @@ buffer does not have a live preview yet, this command starts one first.
 
 - `M-x beacon-preview-mode` - enable or disable the minor mode in the current source buffer
 - `M-x beacon-preview-dwim` - open or jump the preview for the current source buffer
-- `M-x beacon-preview-switch-to-preview` - jump to the tracked preview, starting one if needed
-- `M-x beacon-preview-toggle-preview-display` - show or hide the tracked preview, starting one if needed
-- `M-x beacon-preview-jump-to-anchor` - jump the preview to a specific anchor name
 - `M-x beacon-preview-flash-current-target` - highlight the current source-correlated preview target without scrolling
 - `M-x beacon-preview-sync-source-to-preview` - move the source buffer to the block currently visible in the preview
+- `M-x beacon-preview-toggle-preview-display` - show or hide the tracked preview, starting one if needed
+- `M-x beacon-preview-switch-to-preview` - jump to the tracked preview, starting one if needed
+- `M-x beacon-preview-jump-to-anchor` - jump the preview to a specific anchor name
 - `M-x beacon-preview-reload` - reload the current preview page in xwidget
+- `M-x beacon-preview-apply-behavior-style` - apply a named bundle of preview-follow settings
 - `M-x beacon-preview-toggle-refresh-jump-behavior` - switch between block-following and preserving preview position
 - `M-x beacon-preview-toggle-follow-window-display-changes` - toggle live preview following for source scrolling/recentering
 - `M-x beacon-preview-toggle-reveal-hidden-preview-window` - toggle whether source-driven refresh may re-show a hidden preview
-- `M-x beacon-preview-apply-behavior-style` - apply a named bundle of preview-follow settings
 
 ## Key Bindings
 
 `beacon-preview-mode` installs these buffer-local bindings:
 
 - `C-c C-b o` for `beacon-preview-dwim`
-- `C-c C-b s` for `beacon-preview-apply-behavior-style`
-- `C-c C-b t` for `beacon-preview-toggle-preview-display`
-- `C-c C-b p` for `beacon-preview-sync-source-to-preview`
-- `C-c C-b a` for `beacon-preview-jump-to-anchor`
 - `C-c C-b h` for `beacon-preview-flash-current-target`
+- `C-c C-b p` for `beacon-preview-sync-source-to-preview`
+- `C-c C-b t` for `beacon-preview-toggle-preview-display`
+- `C-c C-b a` for `beacon-preview-jump-to-anchor`
+- `C-c C-b s` for `beacon-preview-apply-behavior-style`
 - `C-c C-b f` for `beacon-preview-toggle-refresh-jump-behavior`
 - `C-c C-b w` for `beacon-preview-toggle-follow-window-display-changes`
 - `C-c C-b v` for `beacon-preview-toggle-reveal-hidden-preview-window`

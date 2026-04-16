@@ -368,6 +368,15 @@ You can use a named preset such as `default', `live', `visible',
   :type 'integer
   :group 'beacon-preview-navigation)
 
+(defcustom beacon-preview-slow-build-message-threshold 0.5
+  "Minimum build time in seconds before showing a completion message.
+
+When a preview build takes at least this long, a message showing the elapsed
+time is displayed in the echo area.  Faster builds clear the transient
+\"building\" message silently.  Set to 0 to always show timing."
+  :type 'number
+  :group 'beacon-preview-debugging)
+
 (defcustom beacon-preview-debug nil
   "Whether beacon preview should emit debug messages to `*Messages*'."
   :type 'boolean
@@ -417,6 +426,9 @@ You can use a named preset such as `default', `live', `visible',
 
 (defvar-local beacon-preview--edited-positions nil
   "Recently edited source positions collected since the last save/revert.")
+
+(defvar-local beacon-preview--build-process nil
+  "Active async build process for this source buffer.")
 
 (defvar-local beacon-preview--ephemeral-source-id nil
   "Stable per-buffer identifier used for unvisited preview artifacts.")
@@ -2145,48 +2157,60 @@ it is currently hidden behind another buffer."
           (format "Preview build failed; see %s for details" output-buffer)
         (format "Preview build failed: %s" line)))))
 
-;;;###autoload
-(defun beacon-preview-build-current-file ()
-  "Build preview artifacts for the current source buffer.
+(defun beacon-preview--validate-build-prerequisites ()
+  "Signal a user error unless all build prerequisites are available."
+  (unless (beacon-preview--command-available-p beacon-preview-python-command)
+    (user-error "Python executable not found: %s" beacon-preview-python-command))
+  (unless (file-exists-p (expand-file-name beacon-preview-builder-script))
+    (user-error "Preview builder script not found: %s" beacon-preview-builder-script))
+  (unless (beacon-preview--command-available-p beacon-preview-pandoc-command)
+    (user-error "Pandoc executable not found: %s" beacon-preview-pandoc-command)))
 
-Returns a plist with `:html' and `:manifest' paths."
-  (interactive)
+(defun beacon-preview--build-args ()
+  "Return the argument list for the builder process.
+
+Also validates prerequisites and prepares the build source.  The returned
+plist includes `:program', `:args', `:html', `:manifest', and
+`:default-directory'."
+  (beacon-preview--validate-build-prerequisites)
   (let* ((build-source (beacon-preview--prepare-build-source))
          (source-file (plist-get build-source :input-file))
-         (default-directory (plist-get build-source :default-directory))
          (artifacts (beacon-preview--artifact-paths))
          (html-path (plist-get artifacts :html))
          (manifest-path (plist-get artifacts :manifest))
          (base-name (plist-get build-source :base-name))
          (builder-script (expand-file-name beacon-preview-builder-script))
+         (output-dir (plist-get build-source :output-dir)))
+    (list :program beacon-preview-python-command
+          :args (list builder-script
+                     "--input" source-file
+                     "--output-dir" output-dir
+                     "--name" base-name
+                     "--pandoc" beacon-preview-pandoc-command)
+          :html html-path
+          :manifest manifest-path
+          :default-directory (plist-get build-source :default-directory))))
+
+;;;###autoload
+(defun beacon-preview-build-current-file ()
+  "Build preview artifacts for the current source buffer synchronously.
+
+Returns a plist with `:html' and `:manifest' paths."
+  (interactive)
+  (let* ((build (beacon-preview--build-args))
+         (html-path (plist-get build :html))
+         (manifest-path (plist-get build :manifest))
+         (default-directory (plist-get build :default-directory))
          (output-buffer "*beacon-preview-build*")
-         (output-dir (plist-get build-source :output-dir))
-         exit-code)
-    (unless (beacon-preview--command-available-p beacon-preview-python-command)
-      (user-error "Python executable not found: %s" beacon-preview-python-command))
-    (unless (file-exists-p builder-script)
-      (user-error "Preview builder script not found: %s" builder-script))
-    (unless (beacon-preview--command-available-p beacon-preview-pandoc-command)
-      (user-error "Pandoc executable not found: %s" beacon-preview-pandoc-command))
-    (setq exit-code
+         (exit-code
           (condition-case err
-              (call-process
-               beacon-preview-python-command
-               nil
-               output-buffer
-               nil
-               builder-script
-                "--input"
-                source-file
-                "--output-dir"
-                output-dir
-                "--name"
-                base-name
-                "--pandoc"
-                beacon-preview-pandoc-command)
-             (file-missing
-              (user-error "Failed to start preview builder: %s"
-                          (error-message-string err)))))
+              (apply #'call-process
+                     (plist-get build :program)
+                     nil output-buffer nil
+                     (plist-get build :args))
+            (file-missing
+             (user-error "Failed to start preview builder: %s"
+                         (error-message-string err))))))
     (unless (and (integerp exit-code) (zerop exit-code))
       (pop-to-buffer output-buffer)
       (user-error "%s" (beacon-preview--build-error-message output-buffer)))
@@ -2194,7 +2218,66 @@ Returns a plist with `:html' and `:manifest' paths."
     (beacon-preview-load-manifest manifest-path)
     (when (called-interactively-p 'interactive)
       (message "Built preview: %s" html-path))
-    artifacts))
+    (list :html html-path :manifest manifest-path)))
+
+(defun beacon-preview--build-current-file-async (callback)
+  "Build preview artifacts asynchronously, then call CALLBACK.
+
+CALLBACK receives one argument: a plist with `:html' and `:manifest' paths,
+or nil on failure.  Any previously running async build for this source buffer
+is killed first."
+  (let* ((build (beacon-preview--build-args))
+         (html-path (plist-get build :html))
+         (manifest-path (plist-get build :manifest))
+         (default-directory (plist-get build :default-directory))
+         (source-buffer (current-buffer))
+         (output-buffer (generate-new-buffer " *beacon-preview-build-async*"))
+         (start-time (current-time)))
+    ;; Kill any in-flight build for this source buffer.
+    (when (and beacon-preview--build-process
+               (process-live-p beacon-preview--build-process))
+      (delete-process beacon-preview--build-process))
+    (condition-case err
+        (let ((process
+               (apply #'start-process
+                      "beacon-preview-build"
+                      output-buffer
+                      (plist-get build :program)
+                      (plist-get build :args))))
+          (setq beacon-preview--build-process process)
+          (set-process-sentinel
+           process
+           (lambda (proc event)
+             (when (buffer-live-p source-buffer)
+               (with-current-buffer source-buffer
+                 (when (eq beacon-preview--build-process proc)
+                   (setq beacon-preview--build-process nil))))
+             (unwind-protect
+                 (cond
+                  ((not (eq (process-status proc) 'exit))
+                   (beacon-preview--debug "async build interrupted: %s"
+                                          (string-trim event))
+                   (funcall callback nil))
+                  ((not (zerop (process-exit-status proc)))
+                   (when (buffer-live-p source-buffer)
+                     (with-current-buffer source-buffer
+                       (message "[beacon-preview] build failed (exit %d)"
+                                (process-exit-status proc))))
+                   (funcall callback nil))
+                  (t
+                   (when (buffer-live-p source-buffer)
+                     (with-current-buffer source-buffer
+                       (setq beacon-preview--last-html-path html-path)
+                       (beacon-preview-load-manifest manifest-path)
+                       (beacon-preview--build-message-finish start-time)))
+                   (funcall callback (list :html html-path
+                                           :manifest manifest-path))))
+               (when (buffer-live-p output-buffer)
+                 (kill-buffer output-buffer))))))
+      (file-missing
+       (kill-buffer output-buffer)
+       (user-error "Failed to start preview builder: %s"
+                   (error-message-string err))))))
 
 (defun beacon-preview--after-save ()
   "Refresh the current preview after saving the source buffer."
@@ -2228,54 +2311,86 @@ have a live preview session."
              (not (beacon-preview--live-preview-p)))
     (beacon-preview-build-and-open)))
 
+(defun beacon-preview--build-message-start ()
+  "Show a transient building message and return the current time."
+  (message "[beacon-preview] building...")
+  (current-time))
+
+(defun beacon-preview--build-message-finish (start-time)
+  "Show or clear the build message based on elapsed time since START-TIME."
+  (let ((elapsed (float-time (time-subtract (current-time) start-time))))
+    (if (>= elapsed beacon-preview-slow-build-message-threshold)
+        (message "[beacon-preview] preview ready (%.1fs)" elapsed)
+      (message nil))))
+
 (defun beacon-preview-build-and-open ()
-  "Build preview artifacts for the current file and open the HTML preview."
-  (let* ((artifacts (beacon-preview-build-current-file))
-         (html-path (plist-get artifacts :html))
-         (anchor (beacon-preview--current-anchor-maybe)))
-    (beacon-preview--open-preview html-path anchor t)))
+  "Build preview artifacts asynchronously and open the HTML preview."
+  (beacon-preview--build-message-start)
+  (let ((source-buffer (current-buffer)))
+    (beacon-preview--build-current-file-async
+     (lambda (artifacts)
+       (when (and artifacts (buffer-live-p source-buffer))
+         (with-current-buffer source-buffer
+           (let* ((html-path (plist-get artifacts :html))
+                  (anchor (beacon-preview--current-anchor-maybe)))
+             (beacon-preview--open-preview html-path anchor t))))))))
+
+(defun beacon-preview--refresh-with-artifacts (artifacts source-buffer
+                                                         live edited-anchors)
+  "Refresh the preview in SOURCE-BUFFER using ARTIFACTS.
+
+LIVE, and EDITED-ANCHORS are the pre-build state captured by the caller."
+  (when (and artifacts (buffer-live-p source-buffer))
+    (with-current-buffer source-buffer
+      (let* ((html-path (plist-get artifacts :html))
+             (anchor (and live
+                          (beacon-preview--live-preview-p)
+                          (eq beacon-preview-refresh-jump-behavior 'block)
+                          (beacon-preview--current-anchor-maybe)))
+             (flash-script (and edited-anchors
+                                (beacon-preview--flash-visible-anchors-script
+                                 edited-anchors))))
+        (when (beacon-preview--live-preview-p)
+          (if (eq beacon-preview-refresh-jump-behavior 'preserve)
+              (progn
+                (setq beacon-preview--last-html-path html-path)
+                (with-current-buffer beacon-preview--xwidget-buffer
+                  (setq beacon-preview--pending-sync-generation
+                        (1+ beacon-preview--pending-sync-generation))
+                  (setq beacon-preview--pending-sync-script
+                        (if flash-script
+                            (concat
+                             (beacon-preview--restore-scroll-script)
+                             flash-script)
+                          (beacon-preview--restore-scroll-script))))
+                (beacon-preview--execute-script
+                 (beacon-preview--preserve-scroll-script)))
+            (beacon-preview--open-preview html-path anchor)
+            (when (and flash-script
+                       (null anchor)
+                       (beacon-preview--live-preview-p))
+              (with-current-buffer beacon-preview--xwidget-buffer
+                (setq beacon-preview--pending-sync-generation
+                      (1+ beacon-preview--pending-sync-generation))
+                (setq beacon-preview--pending-sync-script flash-script)))))))))
 
 (defun beacon-preview-build-and-refresh ()
-  "Build preview artifacts, reload the manifest, and refresh a live preview.
+  "Build preview artifacts asynchronously and refresh a live preview.
 
 This only refreshes a preview that is already open; it never creates a new
 preview window.  When `beacon-preview-refresh-jump-behavior' is `preserve',
 refresh keeps the preview's current scroll position instead of jumping to the
 current source block.  Save-triggered refreshes also flash recently edited
 preview blocks when those targets remain visible after refresh."
-  (let ((live (beacon-preview--live-preview-p)))
-    (let* ((edited-anchors (and live (beacon-preview--edited-anchors)))
-           (artifacts (beacon-preview-build-current-file))
-           (html-path (plist-get artifacts :html))
-           (anchor (and live
-                        (eq beacon-preview-refresh-jump-behavior 'block)
-                        (beacon-preview--current-anchor-maybe)))
-           (flash-script (and edited-anchors
-                              (beacon-preview--flash-visible-anchors-script
-                               edited-anchors))))
-      (when live
-        (if (eq beacon-preview-refresh-jump-behavior 'preserve)
-            (progn
-              (setq beacon-preview--last-html-path html-path)
-              (with-current-buffer beacon-preview--xwidget-buffer
-                (setq beacon-preview--pending-sync-generation
-                      (1+ beacon-preview--pending-sync-generation))
-                (setq beacon-preview--pending-sync-script
-                      (if flash-script
-                          (concat
-                           (beacon-preview--restore-scroll-script)
-                           flash-script)
-                        (beacon-preview--restore-scroll-script))))
-              (beacon-preview--execute-script
-               (beacon-preview--preserve-scroll-script)))
-          (beacon-preview--open-preview html-path anchor)
-          (when (and flash-script
-                     (null anchor)
-                     (beacon-preview--live-preview-p))
-            (with-current-buffer beacon-preview--xwidget-buffer
-              (setq beacon-preview--pending-sync-generation
-                    (1+ beacon-preview--pending-sync-generation))
-              (setq beacon-preview--pending-sync-script flash-script))))))))
+  (let ((live (beacon-preview--live-preview-p))
+        (source-buffer (current-buffer))
+        (edited-anchors (and (beacon-preview--live-preview-p)
+                             (beacon-preview--edited-anchors))))
+    (beacon-preview--build-message-start)
+    (beacon-preview--build-current-file-async
+     (lambda (artifacts)
+       (beacon-preview--refresh-with-artifacts
+        artifacts source-buffer live edited-anchors)))))
 
 ;;;###autoload
 (defun beacon-preview-dwim ()

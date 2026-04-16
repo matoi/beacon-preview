@@ -7,6 +7,16 @@
                    (file-name-directory
                     (or load-file-name buffer-file-name))))
 
+(defun beacon-preview-test--sync-async-build (callback)
+  "Synchronous stand-in for `beacon-preview--build-current-file-async' in tests."
+  (let ((artifacts (beacon-preview-build-current-file)))
+    (funcall callback artifacts)))
+
+;; Force async builds to run synchronously during tests so that
+;; process sentinels are not needed in batch mode.
+(advice-add 'beacon-preview--build-current-file-async :override
+            #'beacon-preview-test--sync-async-build)
+
 (ert-deftest beacon-preview-source-temp-directory-is-stable ()
   (let* ((beacon-preview-temporary-root "/tmp/beacon-preview-tests/")
          (source-a "/tmp/project-a/sample.md")
