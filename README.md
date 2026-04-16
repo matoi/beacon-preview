@@ -74,7 +74,7 @@ A slightly more opinionated example for daily use might look like:
          (org-mode . beacon-preview-mode))
   :bind
   (:map beacon-preview-mode-map
-        ("C-c b o" . beacon-preview-build-and-open)
+        ("C-c b o" . beacon-preview-preview)
         ("C-c b t" . beacon-preview-toggle-preview-display)
         ("C-c b p" . beacon-preview-sync-source-to-preview))
   :custom
@@ -111,35 +111,17 @@ and **Debugging** subgroups.
 Open a Markdown or Org buffer and run:
 
 ```elisp
-(beacon-preview-build-and-open)
+(beacon-preview-preview)
 ```
 
-This will:
+This single command handles the entire preview lifecycle:
 
-- generate preview HTML from the current buffer
-- open the generated HTML in xwidget
+- when no preview exists, it builds artifacts and opens the preview
+- when a preview is already live, it jumps to the current source block
 
-If no preview exists yet, this command creates one. If a tracked preview already
-exists for the source buffer, later refreshes reuse it.
-
-After that, use:
-
-```elisp
-(beacon-preview-jump-to-current-heading)
-```
-
-to move the preview to the current source heading. The jump also tries to
-roughly preserve point's vertical position inside the source window, so the
-target heading does not always land at the very top of the preview.
-
-For a more block-oriented jump, use:
-
-```elisp
-(beacon-preview-jump-to-current-block)
-```
-
-This prefers the current block when one can be identified reliably, and
-otherwise falls back to the current heading.
+The jump prefers the nearest block-level element (code block, blockquote,
+table, list item, or paragraph) and falls back to the current heading. It also
+tries to roughly preserve point's vertical position inside the source window.
 
 If you only want to visually reacquire the current resolved target without
 scrolling the preview, use:
@@ -177,12 +159,6 @@ hidden preview window again, enable:
 
 ```elisp
 (setq beacon-preview-reveal-hidden-preview-window t)
-```
-
-If you want to refresh manually, use:
-
-```elisp
-(beacon-preview-build-and-refresh)
 ```
 
 If you prefer the preview in its own frame instead of a side window, use:
@@ -306,13 +282,9 @@ buffer does not have a live preview yet, this command starts one first.
 ## Useful Commands
 
 - `M-x beacon-preview-mode` - enable or disable the minor mode in the current source buffer
-- `M-x beacon-preview-build-and-open` - build preview artifacts and show the preview
-- `M-x beacon-preview-build-and-refresh` - rebuild artifacts and refresh an existing preview
-- `M-x beacon-preview-apply-behavior-style` - apply a named bundle of preview-follow settings
+- `M-x beacon-preview-preview` - open or jump the preview for the current source buffer
 - `M-x beacon-preview-switch-to-preview` - jump to the tracked preview, starting one if needed
 - `M-x beacon-preview-toggle-preview-display` - show or hide the tracked preview, starting one if needed
-- `M-x beacon-preview-jump-to-current-heading` - scroll the preview to the current source heading
-- `M-x beacon-preview-jump-to-current-block` - scroll the preview to the current source block when possible
 - `M-x beacon-preview-jump-to-anchor` - jump the preview to a specific anchor name
 - `M-x beacon-preview-flash-current-target` - highlight the current source-correlated preview target without scrolling
 - `M-x beacon-preview-sync-source-to-preview` - move the source buffer to the block currently visible in the preview
@@ -320,18 +292,16 @@ buffer does not have a live preview yet, this command starts one first.
 - `M-x beacon-preview-toggle-refresh-jump-behavior` - switch between block-following and preserving preview position
 - `M-x beacon-preview-toggle-follow-window-display-changes` - toggle live preview following for source scrolling/recentering
 - `M-x beacon-preview-toggle-reveal-hidden-preview-window` - toggle whether source-driven refresh may re-show a hidden preview
+- `M-x beacon-preview-apply-behavior-style` - apply a named bundle of preview-follow settings
 
 ## Key Bindings
 
 `beacon-preview-mode` installs these buffer-local bindings:
 
-- `C-c C-b o` for `beacon-preview-build-and-open`
-- `C-c C-b r` for `beacon-preview-build-and-refresh`
+- `C-c C-b o` for `beacon-preview-preview`
 - `C-c C-b s` for `beacon-preview-apply-behavior-style`
 - `C-c C-b t` for `beacon-preview-toggle-preview-display`
 - `C-c C-b p` for `beacon-preview-sync-source-to-preview`
-- `C-c C-b j` for `beacon-preview-jump-to-current-heading`
-- `C-c C-b b` for `beacon-preview-jump-to-current-block`
 - `C-c C-b a` for `beacon-preview-jump-to-anchor`
 - `C-c C-b h` for `beacon-preview-flash-current-target`
 - `C-c C-b f` for `beacon-preview-toggle-refresh-jump-behavior`

@@ -188,5 +188,51 @@ class BeaconifyHtmlTests(unittest.TestCase):
         self.assertIn('id="beacon-h1-1"', with_api)
 
 
+    def test_skips_beaconing_child_elements_inside_containers(self) -> None:
+        html = (
+            "<h1>Title</h1>\n"
+            "<p>Standalone paragraph.</p>\n"
+            "<ul>\n"
+            "<li><p>List item paragraph.</p></li>\n"
+            "</ul>\n"
+            "<blockquote>\n"
+            "<p>Blockquote paragraph.</p>\n"
+            "</blockquote>\n"
+            "<p>After.</p>\n"
+        )
+
+        output, manifest = instrument_html(html, prefix="beacon")
+
+        kinds = [(e["kind"], e["index"]) for e in manifest]
+        self.assertIn(("h1", 1), kinds)
+        self.assertIn(("p", 1), kinds)
+        self.assertIn(("li", 1), kinds)
+        self.assertIn(("blockquote", 1), kinds)
+        self.assertIn(("p", 2), kinds)
+        # The <p> inside <li> and <blockquote> must not be beaconed.
+        self.assertNotIn(("p", 3), kinds)
+        self.assertEqual(
+            [e["text"] for e in manifest if e["kind"] == "p"],
+            ["Standalone paragraph.", "After."],
+        )
+
+    def test_skips_nested_blockquote_beaconing(self) -> None:
+        html = (
+            "<blockquote>\n"
+            "<blockquote>\n"
+            "<p>Nested.</p>\n"
+            "</blockquote>\n"
+            "</blockquote>\n"
+        )
+
+        output, manifest = instrument_html(html, prefix="beacon")
+
+        kinds = [(e["kind"], e["index"]) for e in manifest]
+        self.assertEqual(kinds, [("blockquote", 1)])
+        self.assertIn('id="beacon-blockquote-1"', output)
+        # Inner blockquote must not get its own beacon.
+        self.assertNotIn("beacon-blockquote-2", output)
+
+
 if __name__ == "__main__":
     unittest.main()

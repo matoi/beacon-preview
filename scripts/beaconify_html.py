@@ -20,6 +20,17 @@ from pathlib import Path
 TARGET_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "blockquote", "pre", "table"}
 VOID_OR_SELF_CLOSING = {"br", "hr", "img", "input", "meta", "link"}
 
+# Tags whose children should not be independently beaconed.  For example, a
+# ``<p>`` inside ``<li>`` is part of the list item; counting it as a separate
+# paragraph would desynchronize the kind/index mapping between the generated
+# HTML and the source-side block counter.
+CONTAINER_TAGS = {"li", "blockquote"}
+
+# Tags that suppress beaconing of their own kind when nested.  A ``<blockquote>``
+# inside another ``<blockquote>`` corresponds to a single source-side blockquote
+# block (``> > text``), so only the outermost gets a beacon.
+SUPPRESS_NESTED_TAGS = {"blockquote"}
+
 TAG_RE = re.compile(r"<(?P<closing>/)?(?P<tag>[A-Za-z][A-Za-z0-9:-]*)(?P<attrs>[^<>]*?)(?P<selfclose>/)?>")
 CLASS_RE = re.compile(r'\bclass\s*=\s*(?P<quote>["\'])(?P<value>.*?)(?P=quote)', re.IGNORECASE | re.DOTALL)
 ID_RE = re.compile(r"\bid\s*=", re.IGNORECASE)
@@ -378,18 +389,44 @@ def enrich_manifest_with_text(html_text: str, manifest: list[dict[str, str | int
 def instrument_html(text: str, prefix: str) -> tuple[str, list[dict[str, str | int]]]:
     counters: defaultdict[str, int] = defaultdict(int)
     manifest: list[dict[str, str | int]] = []
+    container_depth = 0
+    container_stack: list[str] = []
 
     def replace(match: re.Match[str]) -> str:
+        nonlocal container_depth
+
         closing = match.group("closing")
         tag = normalize_tag(match.group("tag"))
         attrs = match.group("attrs") or ""
         selfclose = match.group("selfclose") or ""
 
-        if closing or tag in VOID_OR_SELF_CLOSING:
+        if tag in VOID_OR_SELF_CLOSING:
+            return match.group(0)
+
+        if closing:
+            if tag in CONTAINER_TAGS and container_stack and container_stack[-1] == tag:
+                container_stack.pop()
+                container_depth -= 1
             return match.group(0)
 
         if not should_instrument(tag, attrs):
             return match.group(0)
+
+        # Skip child elements inside a beaconed container; they are
+        # represented through the parent's beacon in the manifest.
+        if container_depth > 0:
+            is_nested_container = tag in CONTAINER_TAGS
+            # Suppress nested containers of the same kind (e.g. nested
+            # blockquotes map to one source block).
+            if not is_nested_container or tag in SUPPRESS_NESTED_TAGS:
+                if is_nested_container:
+                    container_stack.append(tag)
+                    container_depth += 1
+                return match.group(0)
+
+        if tag in CONTAINER_TAGS:
+            container_stack.append(tag)
+            container_depth += 1
 
         counters[tag] += 1
         manifest.append(make_manifest_entry(tag, attrs, tag, counters[tag], prefix))

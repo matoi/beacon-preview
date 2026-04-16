@@ -443,6 +443,39 @@
                     "状態モデル: per-position tracker 配列")
                    "状態モデル-per-position-tracker-配列")))
 
+(ert-deftest beacon-preview-build-and-refresh-does-not-create-preview-when-none-exists ()
+  (with-temp-buffer
+    (setq beacon-preview--xwidget-buffer nil)
+    (let ((opened nil))
+      (cl-letf (((symbol-function 'beacon-preview-build-current-file)
+                 (lambda () '(:html "/tmp/sample.html" :manifest "/tmp/sample.json")))
+                ((symbol-function 'beacon-preview--open-preview)
+                 (lambda (&rest _args) (setq opened t))))
+        (beacon-preview-build-and-refresh)
+        (should-not opened)))))
+
+(ert-deftest beacon-preview-preview-builds-and-opens-when-no-live-preview ()
+  (with-temp-buffer
+    (setq beacon-preview--xwidget-buffer nil)
+    (let ((opened nil))
+      (cl-letf (((symbol-function 'beacon-preview-build-and-open)
+                 (lambda () (setq opened t)))
+                ((symbol-function 'beacon-preview--live-preview-p)
+                 (lambda () nil)))
+        (beacon-preview-preview)
+        (should opened)))))
+
+(ert-deftest beacon-preview-preview-jumps-to-block-when-preview-is-live ()
+  (with-temp-buffer
+    (setq beacon-preview--xwidget-buffer (current-buffer))
+    (let ((jumped nil))
+      (cl-letf (((symbol-function 'beacon-preview-jump-to-current-block)
+                 (lambda () (setq jumped t)))
+                ((symbol-function 'beacon-preview--live-preview-p)
+                 (lambda () t)))
+        (beacon-preview-preview)
+        (should jumped)))))
+
 (ert-deftest beacon-preview-window-line-ratio-stays-in-range ()
   (with-temp-buffer
     (dotimes (_ 40)
@@ -1465,11 +1498,10 @@
                              "*beacon-preview: notes.org*")))
         (kill-buffer preview-buffer)))))
 
-(ert-deftest beacon-preview-build-and-refresh-reopens-when-preview-buffer-is-dead ()
+(ert-deftest beacon-preview-build-and-refresh-skips-open-when-preview-buffer-is-dead ()
   (let* ((tmp-root (make-temp-file "beacon-preview-ert-" t))
          (source-file (expand-file-name "sample.md" tmp-root))
          (beacon-preview-temporary-root (expand-file-name "preview-root" tmp-root))
-         (reload-called nil)
          (opened-file nil))
     (unwind-protect
         (progn
@@ -1487,8 +1519,7 @@
                        (lambda (file &optional _anchor _explicit)
                          (setq opened-file file))))
               (beacon-preview-build-and-refresh))
-            (should-not reload-called)
-            (should (string= opened-file html-path)))
+            (should-not opened-file))
           (kill-buffer (current-buffer)))
       (ignore-errors
         (when (get-file-buffer source-file)
@@ -2514,9 +2545,7 @@
 
 (ert-deftest beacon-preview-mode-installs-keybindings ()
   (should (eq (lookup-key beacon-preview-command-map (kbd "o"))
-              #'beacon-preview-build-and-open))
-  (should (eq (lookup-key beacon-preview-command-map (kbd "r"))
-              #'beacon-preview-build-and-refresh))
+              #'beacon-preview-preview))
   (should (eq (lookup-key beacon-preview-command-map (kbd "s"))
               #'beacon-preview-apply-behavior-style))
   (should (eq (lookup-key beacon-preview-command-map (kbd "t"))
@@ -2525,10 +2554,6 @@
               #'beacon-preview-sync-source-to-preview))
   (should (eq (lookup-key beacon-preview-command-map (kbd "d"))
               #'beacon-preview-toggle-debug))
-  (should (eq (lookup-key beacon-preview-command-map (kbd "j"))
-              #'beacon-preview-jump-to-current-heading))
-  (should (eq (lookup-key beacon-preview-command-map (kbd "b"))
-              #'beacon-preview-jump-to-current-block))
   (should (eq (lookup-key beacon-preview-command-map (kbd "h"))
               #'beacon-preview-flash-current-target))
   (should (eq (lookup-key beacon-preview-command-map (kbd "f"))

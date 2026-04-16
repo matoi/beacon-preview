@@ -423,13 +423,10 @@ You can use a named preset such as `default', `live', `visible',
 
 (defvar beacon-preview-command-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "o") #'beacon-preview-build-and-open)
-    (define-key map (kbd "r") #'beacon-preview-build-and-refresh)
+    (define-key map (kbd "o") #'beacon-preview-preview)
     (define-key map (kbd "s") #'beacon-preview-apply-behavior-style)
     (define-key map (kbd "t") #'beacon-preview-toggle-preview-display)
     (define-key map (kbd "p") #'beacon-preview-sync-source-to-preview)
-    (define-key map (kbd "j") #'beacon-preview-jump-to-current-heading)
-    (define-key map (kbd "b") #'beacon-preview-jump-to-current-block)
     (define-key map (kbd "a") #'beacon-preview-jump-to-anchor)
     (define-key map (kbd "h") #'beacon-preview-flash-current-target)
     (define-key map (kbd "f") #'beacon-preview-toggle-refresh-jump-behavior)
@@ -2231,56 +2228,65 @@ have a live preview session."
              (not (beacon-preview--live-preview-p)))
     (beacon-preview-build-and-open)))
 
-;;;###autoload
 (defun beacon-preview-build-and-open ()
   "Build preview artifacts for the current file and open the HTML preview."
-  (interactive)
   (let* ((artifacts (beacon-preview-build-current-file))
          (html-path (plist-get artifacts :html))
          (anchor (beacon-preview--current-anchor-maybe)))
     (beacon-preview--open-preview html-path anchor t)))
 
-;;;###autoload
 (defun beacon-preview-build-and-refresh ()
-  "Build preview artifacts, reload the manifest, and refresh the preview.
+  "Build preview artifacts, reload the manifest, and refresh a live preview.
 
-If no preview is open yet, open the generated HTML. When
-`beacon-preview-refresh-jump-behavior' is `preserve' and a live preview exists,
+This only refreshes a preview that is already open; it never creates a new
+preview window.  When `beacon-preview-refresh-jump-behavior' is `preserve',
 refresh keeps the preview's current scroll position instead of jumping to the
-current source block. Save-triggered refreshes also flash recently edited
+current source block.  Save-triggered refreshes also flash recently edited
 preview blocks when those targets remain visible after refresh."
+  (let ((live (beacon-preview--live-preview-p)))
+    (let* ((edited-anchors (and live (beacon-preview--edited-anchors)))
+           (artifacts (beacon-preview-build-current-file))
+           (html-path (plist-get artifacts :html))
+           (anchor (and live
+                        (eq beacon-preview-refresh-jump-behavior 'block)
+                        (beacon-preview--current-anchor-maybe)))
+           (flash-script (and edited-anchors
+                              (beacon-preview--flash-visible-anchors-script
+                               edited-anchors))))
+      (when live
+        (if (eq beacon-preview-refresh-jump-behavior 'preserve)
+            (progn
+              (setq beacon-preview--last-html-path html-path)
+              (with-current-buffer beacon-preview--xwidget-buffer
+                (setq beacon-preview--pending-sync-generation
+                      (1+ beacon-preview--pending-sync-generation))
+                (setq beacon-preview--pending-sync-script
+                      (if flash-script
+                          (concat
+                           (beacon-preview--restore-scroll-script)
+                           flash-script)
+                        (beacon-preview--restore-scroll-script))))
+              (beacon-preview--execute-script
+               (beacon-preview--preserve-scroll-script)))
+          (beacon-preview--open-preview html-path anchor)
+          (when (and flash-script
+                     (null anchor)
+                     (beacon-preview--live-preview-p))
+            (with-current-buffer beacon-preview--xwidget-buffer
+              (setq beacon-preview--pending-sync-generation
+                    (1+ beacon-preview--pending-sync-generation))
+              (setq beacon-preview--pending-sync-script flash-script))))))))
+
+;;;###autoload
+(defun beacon-preview-preview ()
+  "Build, open, or jump the preview for the current source buffer.
+
+When no live preview exists, build artifacts and open the preview.  When a
+live preview is already available, jump it to the current source block."
   (interactive)
-  (let* ((edited-anchors (beacon-preview--edited-anchors))
-         (artifacts (beacon-preview-build-current-file))
-         (html-path (plist-get artifacts :html))
-         (anchor (and (eq beacon-preview-refresh-jump-behavior 'block)
-                      (beacon-preview--current-anchor-maybe)))
-         (flash-script (and edited-anchors
-                            (beacon-preview--flash-visible-anchors-script
-                             edited-anchors))))
-    (if (and (eq beacon-preview-refresh-jump-behavior 'preserve)
-             (beacon-preview--live-preview-p))
-        (progn
-          (setq beacon-preview--last-html-path html-path)
-          (with-current-buffer beacon-preview--xwidget-buffer
-            (setq beacon-preview--pending-sync-generation
-                  (1+ beacon-preview--pending-sync-generation))
-            (setq beacon-preview--pending-sync-script
-                  (if flash-script
-                      (concat
-                       (beacon-preview--restore-scroll-script)
-                       flash-script)
-                    (beacon-preview--restore-scroll-script))))
-          (beacon-preview--execute-script
-           (beacon-preview--preserve-scroll-script)))
-      (beacon-preview--open-preview html-path anchor)
-      (when (and flash-script
-                 (null anchor)
-                 (beacon-preview--live-preview-p))
-        (with-current-buffer beacon-preview--xwidget-buffer
-          (setq beacon-preview--pending-sync-generation
-                (1+ beacon-preview--pending-sync-generation))
-          (setq beacon-preview--pending-sync-script flash-script))))))
+  (if (beacon-preview--live-preview-p)
+      (beacon-preview-jump-to-current-block)
+    (beacon-preview-build-and-open)))
 
 ;;;###autoload
 (defun beacon-preview-switch-to-preview ()
@@ -2714,21 +2720,17 @@ This aims to be closer to Pandoc's generated heading identifiers."
     (setq matches (nreverse matches))
     (alist-get 'anchor (nth (1- occurrence) matches))))
 
-;;;###autoload
 (defun beacon-preview-jump-to-current-heading ()
   "Jump preview to the anchor derived from the current Markdown heading."
-  (interactive)
   (beacon-preview-jump-to-anchor
    (beacon-preview-current-heading-anchor)))
 
-;;;###autoload
 (defun beacon-preview-jump-to-current-block ()
   "Jump preview to the current source block anchor.
 
 This prefers block-level anchors such as fenced code blocks, blockquotes,
 tables, list items, and paragraphs. When no block anchor can be resolved, it
 falls back to the current heading anchor."
-  (interactive)
   (unless (beacon-preview--supported-source-mode-p)
     (user-error "Current mode is not configured for source-side beacon lookup"))
   (let ((anchor (or (beacon-preview-current-block-anchor)
