@@ -74,7 +74,7 @@ A slightly more opinionated example for daily use might look like:
          (org-mode . beacon-preview-mode))
   :bind
   (:map beacon-preview-mode-map
-        ("C-c b o" . beacon-preview-preview)
+        ("C-c b o" . beacon-preview-dwim)
         ("C-c b t" . beacon-preview-toggle-preview-display)
         ("C-c b p" . beacon-preview-sync-source-to-preview))
   :custom
@@ -111,7 +111,7 @@ and **Debugging** subgroups.
 Open a Markdown or Org buffer and run:
 
 ```elisp
-(beacon-preview-preview)
+(beacon-preview-dwim)
 ```
 
 This single command handles the entire preview lifecycle:
@@ -282,7 +282,7 @@ buffer does not have a live preview yet, this command starts one first.
 ## Useful Commands
 
 - `M-x beacon-preview-mode` - enable or disable the minor mode in the current source buffer
-- `M-x beacon-preview-preview` - open or jump the preview for the current source buffer
+- `M-x beacon-preview-dwim` - open or jump the preview for the current source buffer
 - `M-x beacon-preview-switch-to-preview` - jump to the tracked preview, starting one if needed
 - `M-x beacon-preview-toggle-preview-display` - show or hide the tracked preview, starting one if needed
 - `M-x beacon-preview-jump-to-anchor` - jump the preview to a specific anchor name
@@ -298,7 +298,7 @@ buffer does not have a live preview yet, this command starts one first.
 
 `beacon-preview-mode` installs these buffer-local bindings:
 
-- `C-c C-b o` for `beacon-preview-preview`
+- `C-c C-b o` for `beacon-preview-dwim`
 - `C-c C-b s` for `beacon-preview-apply-behavior-style`
 - `C-c C-b t` for `beacon-preview-toggle-preview-display`
 - `C-c C-b p` for `beacon-preview-sync-source-to-preview`

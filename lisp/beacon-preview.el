@@ -423,7 +423,7 @@ You can use a named preset such as `default', `live', `visible',
 
 (defvar beacon-preview-command-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "o") #'beacon-preview-preview)
+    (define-key map (kbd "o") #'beacon-preview-dwim)
     (define-key map (kbd "s") #'beacon-preview-apply-behavior-style)
     (define-key map (kbd "t") #'beacon-preview-toggle-preview-display)
     (define-key map (kbd "p") #'beacon-preview-sync-source-to-preview)
@@ -2278,7 +2278,7 @@ preview blocks when those targets remain visible after refresh."
               (setq beacon-preview--pending-sync-script flash-script))))))))
 
 ;;;###autoload
-(defun beacon-preview-preview ()
+(defun beacon-preview-dwim ()
   "Build, open, or jump the preview for the current source buffer.
 
 When no live preview exists, build artifacts and open the preview.  When a

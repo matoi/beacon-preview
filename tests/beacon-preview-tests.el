@@ -454,7 +454,7 @@
         (beacon-preview-build-and-refresh)
         (should-not opened)))))
 
-(ert-deftest beacon-preview-preview-builds-and-opens-when-no-live-preview ()
+(ert-deftest beacon-preview-dwim-builds-and-opens-when-no-live-preview ()
   (with-temp-buffer
     (setq beacon-preview--xwidget-buffer nil)
     (let ((opened nil))
@@ -462,10 +462,10 @@
                  (lambda () (setq opened t)))
                 ((symbol-function 'beacon-preview--live-preview-p)
                  (lambda () nil)))
-        (beacon-preview-preview)
+        (beacon-preview-dwim)
         (should opened)))))
 
-(ert-deftest beacon-preview-preview-jumps-to-block-when-preview-is-live ()
+(ert-deftest beacon-preview-dwim-jumps-to-block-when-preview-is-live ()
   (with-temp-buffer
     (setq beacon-preview--xwidget-buffer (current-buffer))
     (let ((jumped nil))
@@ -473,7 +473,7 @@
                  (lambda () (setq jumped t)))
                 ((symbol-function 'beacon-preview--live-preview-p)
                  (lambda () t)))
-        (beacon-preview-preview)
+        (beacon-preview-dwim)
         (should jumped)))))
 
 (ert-deftest beacon-preview-window-line-ratio-stays-in-range ()
@@ -1088,7 +1088,7 @@
            :type 'user-error))
       (delete-file manifest-file))))
 
-(ert-deftest beacon-preview-preview-url-adds-anchor-fragment ()
+(ert-deftest beacon-preview-dwim-url-adds-anchor-fragment ()
   (should (string-match-p "#section$"
                           (beacon-preview--preview-url "/tmp/sample.html" "section")))
   (should (string-match-p "#%E6%97%A5%E6%9C%AC%E8%AA%9E-%E8%A6%8B%E5%87%BA%E3%81%97$"
@@ -1292,7 +1292,7 @@
 
 (ert-deftest beacon-preview-sync-source-to-preview-moves-to-visible-markdown-block ()
   (let ((source-buffer (generate-new-buffer " *beacon-preview-source*"))
-        (preview-buffer (generate-new-buffer " *beacon-preview-preview*"))
+        (preview-buffer (generate-new-buffer " *beacon-preview-dwim*"))
         (original-point nil))
     (unwind-protect
         (progn
@@ -1461,7 +1461,7 @@
                (should (eq beacon-preview--source-buffer source-buffer))))
         (kill-buffer preview-buffer)))))
 
-(ert-deftest beacon-preview-preview-buffer-name-uses-source-buffer-name ()
+(ert-deftest beacon-preview-dwim-buffer-name-uses-source-buffer-name ()
   (with-temp-buffer
     (rename-buffer "notes.md<docs>" t)
     (setq-local buffer-file-name "/tmp/worktrees/demo/docs/notes.md")
@@ -2038,8 +2038,8 @@
 (ert-deftest beacon-preview-tracks-preview-buffers-per-source-buffer ()
   (let ((source-a (generate-new-buffer " *beacon-preview-source-a*"))
         (source-b (generate-new-buffer " *beacon-preview-source-b*"))
-        (preview-a (generate-new-buffer " *beacon-preview-preview-a*"))
-        (preview-b (generate-new-buffer " *beacon-preview-preview-b*"))
+        (preview-a (generate-new-buffer " *beacon-preview-dwim-a*"))
+        (preview-b (generate-new-buffer " *beacon-preview-dwim-b*"))
         (displayed nil))
     (unwind-protect
         (progn
@@ -2068,7 +2068,7 @@
 
 (ert-deftest beacon-preview-killing-source-buffer-kills-tracked-preview ()
   (let ((source-buffer (generate-new-buffer " *beacon-preview-source*"))
-        (preview-buffer (generate-new-buffer " *beacon-preview-preview*")))
+        (preview-buffer (generate-new-buffer " *beacon-preview-dwim*")))
     (unwind-protect
         (progn
           (with-current-buffer source-buffer
@@ -2085,7 +2085,7 @@
 
 (ert-deftest beacon-preview-killing-source-buffer-deletes-dedicated-preview-frame ()
   (let ((source-buffer (generate-new-buffer " *beacon-preview-source*"))
-        (preview-buffer (generate-new-buffer " *beacon-preview-preview*"))
+        (preview-buffer (generate-new-buffer " *beacon-preview-dwim*"))
         (preview-frame 'preview-frame)
         (deleted-frame nil))
     (unwind-protect
@@ -2122,7 +2122,7 @@
 
 (ert-deftest beacon-preview-killing-source-buffer-still-kills-preview-after-mode-disabled ()
   (let ((source-buffer (generate-new-buffer " *beacon-preview-source*"))
-        (preview-buffer (generate-new-buffer " *beacon-preview-preview*")))
+        (preview-buffer (generate-new-buffer " *beacon-preview-dwim*")))
     (unwind-protect
         (progn
           (with-current-buffer source-buffer
@@ -2140,7 +2140,7 @@
 
 (ert-deftest beacon-preview-killing-preview-buffer-clears-source-tracking-and-frame ()
   (let ((source-buffer (generate-new-buffer " *beacon-preview-source*"))
-        (preview-buffer (generate-new-buffer " *beacon-preview-preview*"))
+        (preview-buffer (generate-new-buffer " *beacon-preview-dwim*"))
         (preview-frame 'preview-frame)
         (deleted-frame nil))
     (unwind-protect
@@ -2545,7 +2545,7 @@
 
 (ert-deftest beacon-preview-mode-installs-keybindings ()
   (should (eq (lookup-key beacon-preview-command-map (kbd "o"))
-              #'beacon-preview-preview))
+              #'beacon-preview-dwim))
   (should (eq (lookup-key beacon-preview-command-map (kbd "s"))
               #'beacon-preview-apply-behavior-style))
   (should (eq (lookup-key beacon-preview-command-map (kbd "t"))
