@@ -7,6 +7,7 @@ It focuses on:
 
 - generating local HTML artifacts with Pandoc
 - adding beacon markers to headings and block-level elements
+- resolving source-side blocks structurally instead of by line-by-line fallback scans
 - opening the result in Emacs xwidget
 - jumping or flashing the preview at useful locations from the source buffer
 
@@ -16,6 +17,11 @@ It focuses on:
 - a graphical Emacs session
 - Pandoc available in `PATH`, or configured explicitly from Emacs
 - Python 3
+- for Markdown source-side sync: Emacs `treesit` support with the `markdown` grammar available
+- for Org source-side sync: `org-element` support
+
+Markdown source-side block detection now assumes a working tree-sitter Markdown
+grammar. The old line-scanning fallback path is no longer used.
 
 ## Installation
 
@@ -116,12 +122,17 @@ Open a Markdown or Org buffer and run:
 
 This single command handles the entire preview lifecycle:
 
-- when no preview exists, it builds artifacts and opens the preview
+- when no preview exists, it builds artifacts asynchronously and opens the preview
 - when a preview is already live, it jumps to the current source block
 
 The jump prefers the nearest block-level element (code block, blockquote,
 table, list item, or paragraph) and falls back to the current heading. It also
 tries to roughly preserve point's vertical position inside the source window.
+
+For source-side block matching, Markdown uses cached tree-sitter entries and
+Org uses cached `org-element` entries. This keeps kind/index lookup aligned
+with the generated manifest without rescanning the buffer from the top on every
+sync step.
 
 If you only want to visually reacquire the current resolved target without
 scrolling the preview, use:
@@ -140,6 +151,13 @@ preview, use:
 That source jump also pushes the previous location onto the mark stack, so you
 can return with `C-u C-SPC`.
 
+Reverse sync is driven from the top of the preview viewport rather than the
+viewport center. When a block start is visible, that topmost visible block
+becomes the sync target. When the viewport is already inside a long block,
+preview-side `block_progress` is sent back so the source buffer can move to an
+approximate position within the same block instead of jumping to a nearby but
+wrong block.
+
 By default, that same block/heading-following behavior is used during
 save-triggered refresh, so editing in the middle of a document generally
 reopens the preview near the current source block rather than always at the top
@@ -149,7 +167,13 @@ position, switch refresh behavior to `preserve` as described below.
 ## Automatic Refresh
 
 When `beacon-preview-mode` is enabled, saving the buffer rebuilds preview
-artifacts and refreshes the tracked preview automatically.
+artifacts and refreshes the tracked preview automatically. Builds run
+asynchronously, so Emacs stays responsive during Pandoc invocation. If a
+new save arrives while a build is still running, the in-flight build is
+superseded.
+
+When a build takes longer than `beacon-preview-slow-build-message-threshold`
+(default 0.5 seconds), the elapsed time is shown in the echo area.
 
 By default, these source-driven refreshes do **not** reclaim a preview side
 window that is currently showing some other buffer. This avoids unexpectedly

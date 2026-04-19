@@ -24,7 +24,9 @@
 
 (require 'subr-x)
 (require 'seq)
+(require 'cl-lib)
 (require 'json)
+(require 'org-element)
 (require 'url-util)
 
 (defgroup beacon-preview nil
@@ -382,6 +384,20 @@ time is displayed in the echo area.  Faster builds clear the transient
   :type 'boolean
   :group 'beacon-preview-debugging)
 
+(defcustom beacon-preview-external-link-browser #'browse-url
+  "Function used to open external links clicked in the preview.
+
+Called with a single URL string argument. When non-nil, clicks on links that
+navigate away from the current preview page are redirected to this function
+instead of loading inside the xwidget, so the preview keeps its current view.
+Set to nil to disable interception and let the xwidget follow links normally."
+  :type '(choice (const :tag "Disabled" nil) function)
+  :group 'beacon-preview-navigation)
+
+(defconst beacon-preview--external-link-sentinel-prefix
+  "about:blank?__beacon_preview_external__="
+  "Prefix of the sentinel URL used to signal an outbound link click.")
+
 (defvar beacon-preview--last-url nil
   "Last URL opened by beacon preview.")
 
@@ -432,6 +448,18 @@ time is displayed in the echo area.  Faster builds clear the transient
 
 (defvar-local beacon-preview--ephemeral-source-id nil
   "Stable per-buffer identifier used for unvisited preview artifacts.")
+
+(defvar-local beacon-preview--markdown-treesit-cache nil
+  "Cached Markdown block entries derived from tree-sitter for the current buffer.")
+
+(defvar-local beacon-preview--markdown-treesit-cache-tick nil
+  "Buffer modification tick used to validate `beacon-preview--markdown-treesit-cache'.")
+
+(defvar-local beacon-preview--org-element-cache nil
+  "Cached Org structural entries derived from `org-element' for the current buffer.")
+
+(defvar-local beacon-preview--org-element-cache-tick nil
+  "Buffer modification tick used to validate `beacon-preview--org-element-cache'.")
 
 (defvar beacon-preview-command-map
   (let ((map (make-sparse-keymap)))
@@ -585,6 +613,39 @@ to heading-based navigation."
       (or (beacon-preview--nearest-block-anchor-at-pos (point))
           (beacon-preview-current-heading-anchor)))))
 
+(defun beacon-preview--external-link-interceptor-script ()
+  "Return JS that redirects outbound link clicks through the sentinel data URL."
+  (format
+   (concat
+    "(function () {"
+    "  if (window.__beaconPreviewLinkInterceptorInstalled__) { return; }"
+    "  window.__beaconPreviewLinkInterceptorInstalled__ = true;"
+    "  var sentinel = %S;"
+    "  document.addEventListener('click', function (event) {"
+    "    if (event.defaultPrevented) { return; }"
+    "    if (event.button !== 0) { return; }"
+    "    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) { return; }"
+    "    var node = event.target;"
+    "    while (node && node.nodeType === 1 && node.tagName !== 'A') {"
+    "      node = node.parentNode;"
+    "    }"
+    "    if (!node || node.tagName !== 'A') { return; }"
+    "    if (!node.getAttribute('href')) { return; }"
+    "    var resolved;"
+    "    try { resolved = new URL(node.href, window.location.href); }"
+    "    catch (_err) { return; }"
+    "    var here = window.location;"
+    "    var samePage = resolved.origin === here.origin"
+    "      && resolved.pathname === here.pathname"
+    "      && resolved.protocol === here.protocol;"
+    "    if (samePage) { return; }"
+    "    event.preventDefault();"
+    "    event.stopPropagation();"
+    "    window.location.href = sentinel + encodeURIComponent(resolved.href);"
+    "  }, true);"
+    "})();")
+   beacon-preview--external-link-sentinel-prefix))
+
 (defun beacon-preview--preview-url (file &optional anchor)
   "Return a preview URL for FILE, optionally targeting ANCHOR."
   (concat (beacon-preview--file-url file)
@@ -592,12 +653,52 @@ to heading-based navigation."
               (concat "#" (url-hexify-string anchor))
             "")))
 
+(defun beacon-preview--external-link-from-uri (uri)
+  "Return the outbound URL encoded in URI's sentinel prefix, or nil."
+  (when (and (stringp uri)
+             (string-prefix-p beacon-preview--external-link-sentinel-prefix uri))
+    (ignore-errors
+      (url-unhex-string
+       (substring uri (length beacon-preview--external-link-sentinel-prefix))))))
+
+(defun beacon-preview--handle-external-link-sentinel (xwidget uri phase)
+  "If URI on XWIDGET carries the external-link sentinel, dispatch and return t.
+
+WebKit emits a `load-changed' event once for each navigation phase
+\(`load-started', `load-committed', `load-finished'\). We want to intercept
+every phase so the sentinel never reaches the default handler, but only
+dispatch the click action once. PHASE is the WebKit phase string from
+`last-input-event'; actions run only on `load-started'."
+  (when (and beacon-preview-external-link-browser
+             (beacon-preview--external-link-from-uri uri))
+    (when (equal phase "load-started")
+      (let ((external-url (beacon-preview--external-link-from-uri uri)))
+        (beacon-preview--debug "external link intercepted: %S" external-url)
+        (unless (string-empty-p external-url)
+          (ignore-errors
+            (funcall beacon-preview-external-link-browser external-url)))
+        (ignore-errors
+          (xwidget-webkit-execute-script xwidget "history.go(-1);"))))
+    t))
+
 (defun beacon-preview--xwidget-callback (xwidget event-type)
   "Handle XWIDGET EVENT-TYPE and run pending preview sync after load finishes."
+  (let* ((uri (and (fboundp 'xwidget-webkit-uri)
+                   (ignore-errors (xwidget-webkit-uri xwidget))))
+         (phase (nth 3 last-input-event))
+         (intercepted (and (eq event-type 'load-changed)
+                           (beacon-preview--handle-external-link-sentinel
+                            xwidget uri phase))))
+    (unless intercepted
+      (beacon-preview--xwidget-callback-default xwidget event-type))))
+
+(defun beacon-preview--xwidget-callback-default (xwidget event-type)
+  "Default handling for XWIDGET EVENT-TYPE when no sentinel is active."
   (xwidget-webkit-callback xwidget event-type)
-  (beacon-preview--debug "xwidget callback event=%S detail=%S"
-                         event-type
-                         (nth 3 last-input-event))
+  (unless (eq event-type 'javascript-callback)
+    (beacon-preview--debug "xwidget callback event=%S detail=%S"
+                           event-type
+                           (nth 3 last-input-event)))
   (when (and (eq event-type 'load-changed)
              (string-equal (nth 3 last-input-event) "load-finished"))
     (with-current-buffer (xwidget-buffer xwidget)
@@ -605,6 +706,11 @@ to heading-based navigation."
         (beacon-preview--label-preview-buffer
          (current-buffer)
          beacon-preview--source-buffer))
+      (when beacon-preview-external-link-browser
+        (ignore-errors
+          (xwidget-webkit-execute-script
+           xwidget
+           (beacon-preview--external-link-interceptor-script))))
       (when beacon-preview--pending-sync-script
         (let ((script beacon-preview--pending-sync-script)
               (generation beacon-preview--pending-sync-generation))
@@ -745,6 +851,11 @@ new preview buffer. The xwidget callback must already be installed for SESSION."
     (with-selected-window window
       (recenter target-line))))
 
+(defun beacon-preview--align-window-to-top (window)
+  "Show point near the top of WINDOW."
+  (with-selected-window window
+    (recenter 0)))
+
 (defun beacon-preview--window-line-ratio (&optional window position)
   "Return POSITION's approximate vertical ratio within WINDOW.
 
@@ -803,41 +914,9 @@ the viewport."
 
 The plist currently contains `:begin' and `:end' positions for the fenced code
 block, including the opening and closing fence lines."
-  (save-excursion
-    (when (beacon-preview--markdown-in-fenced-code-block-p)
-      (let ((target (point))
-            (fence-begin nil)
-            (fence-end nil)
-            (fence-char nil)
-            (fence-length 0))
-        (goto-char (point-min))
-        (beginning-of-line)
-        (catch 'done
-          (while (not (eobp))
-            (when-let ((delimiter (beacon-preview--markdown-fence-delimiter-at-point)))
-              (let ((char (car delimiter))
-                    (length (cdr delimiter))
-                    (line-begin (line-beginning-position)))
-                (if fence-char
-                    (when (and (eq char fence-char)
-                               (>= length fence-length))
-                      (when (and fence-begin
-                                 (<= fence-begin target)
-                                 (<= target (line-end-position)))
-                        (setq fence-end (line-end-position))
-                        (throw 'done
-                               (list :begin fence-begin
-                                     :end fence-end)))
-                      (setq fence-char nil
-                            fence-length 0
-                            fence-begin nil))
-                  (setq fence-char char
-                        fence-length length
-                        fence-begin line-begin))))
-            (forward-line 1))
-          (when (and fence-begin
-                     (<= fence-begin target))
-            (list :begin fence-begin :end (point-max))))))))
+  (when-let ((entry (beacon-preview--markdown-treesit-entry-at-pos (point) '("pre"))))
+    (list :begin (alist-get 'begin entry)
+          :end (alist-get 'end entry))))
 
 (defun beacon-preview--manifest-entry-at-index (kind index)
   "Return the manifest entry for KIND at 1-based INDEX, or nil."
@@ -846,340 +925,512 @@ block, including the opening and closing fence lines."
                    (= (alist-get 'index entry) index)))
             (beacon-preview--manifest-entries)))
 
+(defun beacon-preview--markdown-treesit-available-p ()
+  "Return non-nil when tree-sitter Markdown parsing is available in this buffer."
+  (and (derived-mode-p 'markdown-mode 'gfm-mode)
+       (fboundp 'treesit-parser-create)
+       (fboundp 'treesit-parser-root-node)
+       (fboundp 'treesit-node-type)
+       (fboundp 'treesit-node-child-count)
+       (fboundp 'treesit-node-child)
+       (fboundp 'treesit-node-start)
+       (fboundp 'treesit-node-end)
+       (fboundp 'treesit-node-parent)
+       (fboundp 'treesit-parser-list)
+       (fboundp 'treesit-parser-language)
+       (fboundp 'treesit-language-available-p)
+       (treesit-language-available-p 'markdown)))
+
+(defun beacon-preview--markdown-treesit-parser ()
+  "Return the Markdown tree-sitter parser for the current buffer, or nil."
+  (when (beacon-preview--markdown-treesit-available-p)
+    (or (seq-find
+         (lambda (parser)
+           (eq (treesit-parser-language parser) 'markdown))
+         (treesit-parser-list))
+        (ignore-errors
+          (treesit-parser-create 'markdown)))))
+
+(defun beacon-preview--markdown-treesit-heading-kind (node)
+  "Return manifest heading kind string for Markdown heading NODE, or nil."
+  (pcase (treesit-node-type node)
+    ("atx_heading"
+     (when-let ((marker (treesit-node-child node 0)))
+       (when (string-match "\\`atx_h\\([1-6]\\)_marker\\'"
+                           (treesit-node-type marker))
+         (format "h%s" (match-string 1 (treesit-node-type marker))))))
+    ("setext_heading"
+     (let ((kind nil)
+           (count (treesit-node-child-count node))
+           (i 0))
+       (while (and (< i count) (not kind))
+         (let ((child-type (treesit-node-type (treesit-node-child node i))))
+           (when (string-match "\\`setext_h\\([12]\\)_underline\\'" child-type)
+             (setq kind (format "h%s" (match-string 1 child-type)))))
+         (setq i (1+ i)))
+       kind))
+    (_ nil)))
+
+(defun beacon-preview--markdown-treesit-entry-kind (node)
+  "Return manifest kind string for Markdown tree-sitter NODE, or nil."
+  (or (beacon-preview--markdown-treesit-heading-kind node)
+      (pcase (treesit-node-type node)
+        ("paragraph"
+         (let ((parent (treesit-node-parent node)))
+           (unless (member (and parent (treesit-node-type parent))
+                           '("list_item" "block_quote"))
+             "p")))
+        ("list_item" "li")
+        ("block_quote" "blockquote")
+        ("fenced_code_block" "pre")
+        ("pipe_table" "table")
+        (_ nil))))
+
+(defun beacon-preview--markdown-treesit-heading-text (node begin end)
+  "Return heading text for Markdown heading NODE spanning BEGIN..END."
+  (let* ((raw (buffer-substring-no-properties begin end))
+         (lines (split-string raw "\n"))
+         (first-line (string-trim (or (car lines) ""))))
+    (pcase (treesit-node-type node)
+      ("atx_heading"
+       (when (string-match
+              "^[ \t]\\{0,3\\}\\(#+\\)[ \t]+\\(.+?\\)[ \t]*#*[ \t]*$"
+              first-line)
+         (string-trim (match-string 2 first-line))))
+      ("setext_heading"
+       first-line)
+      (_ nil))))
+
+(defun beacon-preview--markdown-treesit-entry-metadata (node kind begin end)
+  "Return extra metadata alist for Markdown tree-sitter entry.
+
+NODE, KIND, BEGIN, and END describe the entry being recorded."
+  (let ((metadata nil))
+    (when (string-match "\\`h\\([1-6]\\)\\'" kind)
+      (setq metadata
+            (append metadata
+                    (list (cons 'level (string-to-number (match-string 1 kind)))))))
+    (when (string-match "\\`h[1-6]\\'" kind)
+      (when-let ((text (beacon-preview--markdown-treesit-heading-text node begin end)))
+        (setq metadata
+              (append metadata
+                      (list (cons 'text text))))))
+    (append metadata
+            (list (cons 'kind kind)
+                  (cons 'begin begin)
+                  (cons 'end (max begin (1- end)))))))
+
+(defun beacon-preview--markdown-treesit-build-cache ()
+  "Build and return Markdown block entries derived from tree-sitter."
+  (when-let* ((parser (beacon-preview--markdown-treesit-parser))
+              (root (treesit-parser-root-node parser)))
+    (let ((ordered nil)
+          (kind-tables (make-hash-table :test #'equal)))
+      (cl-labels
+          ((walk (node)
+             (when-let ((kind (beacon-preview--markdown-treesit-entry-kind node)))
+               (let* ((begin (treesit-node-start node))
+                      (end (treesit-node-end node))
+                      (index (1+ (length (gethash kind kind-tables nil))))
+                      (entry (append
+                              (list (cons 'index index))
+                              (beacon-preview--markdown-treesit-entry-metadata
+                               node kind begin end))))
+                 (puthash kind
+                          (append (gethash kind kind-tables nil)
+                                  (list entry))
+                          kind-tables)
+                 (setq ordered (append ordered (list entry)))))
+             (dotimes (i (treesit-node-child-count node))
+               (walk (treesit-node-child node i)))))
+        (walk root))
+      (list :ordered ordered :by-kind kind-tables))))
+
+(defun beacon-preview--markdown-treesit-cache ()
+  "Return cached Markdown tree-sitter entries for the current buffer, or nil."
+  (when (beacon-preview--markdown-treesit-available-p)
+    (let ((tick (buffer-chars-modified-tick)))
+      (unless (and beacon-preview--markdown-treesit-cache
+                   (equal beacon-preview--markdown-treesit-cache-tick tick))
+        (setq beacon-preview--markdown-treesit-cache
+              (beacon-preview--markdown-treesit-build-cache))
+        (setq beacon-preview--markdown-treesit-cache-tick tick))
+      beacon-preview--markdown-treesit-cache)))
+
+(defun beacon-preview--markdown-treesit-entries-for-kind (kind)
+  "Return cached Markdown tree-sitter entries for manifest KIND, or nil."
+  (when-let ((cache (beacon-preview--markdown-treesit-cache)))
+    (gethash kind (plist-get cache :by-kind))))
+
+(defun beacon-preview--markdown-treesit-entry-at-pos (pos &optional kinds)
+  "Return Markdown tree-sitter entry containing POS.
+
+When KINDS is non-nil, only entries whose `kind' is in that list are
+considered."
+  (when-let ((cache (beacon-preview--markdown-treesit-cache)))
+    (seq-find
+     (lambda (entry)
+       (and (or (null kinds)
+                (member (alist-get 'kind entry) kinds))
+            (<= (alist-get 'begin entry) pos)
+            (< pos (alist-get 'end entry))))
+     (plist-get cache :ordered))))
+
+(defun beacon-preview--markdown-treesit-entry-at-or-before-pos (pos &optional kinds)
+  "Return Markdown tree-sitter entry containing POS or ending just before it.
+
+When KINDS is non-nil, only entries whose `kind' is in that list are
+considered."
+  (or (beacon-preview--markdown-treesit-entry-at-pos pos kinds)
+      (when-let ((cache (beacon-preview--markdown-treesit-cache)))
+        (let ((result nil))
+          (dolist (entry (plist-get cache :ordered))
+            (when (and (or (null kinds)
+                           (member (alist-get 'kind entry) kinds))
+                       (< (alist-get 'end entry) pos))
+              (setq result entry)))
+          result))))
+
+(defun beacon-preview--markdown-treesit-index-at-pos (kind pos)
+  "Return 1-based Markdown tree-sitter index for KIND containing POS, or nil."
+  (when-let ((entry (beacon-preview--markdown-treesit-entry-at-pos pos (list kind))))
+    (alist-get 'index entry)))
+
+(defun beacon-preview--markdown-treesit-position-at-index (kind index)
+  "Return Markdown tree-sitter position for KIND at 1-based INDEX, or nil."
+  (when-let ((entry (nth (1- index)
+                         (beacon-preview--markdown-treesit-entries-for-kind kind))))
+    (alist-get 'begin entry)))
+
+(defun beacon-preview--markdown-treesit-heading-entries ()
+  "Return cached Markdown tree-sitter heading entries in source order."
+  (when-let ((cache (beacon-preview--markdown-treesit-cache)))
+    (seq-filter
+     (lambda (entry)
+       (string-match-p "\\`h[1-6]\\'" (alist-get 'kind entry)))
+     (plist-get cache :ordered))))
+
+(defun beacon-preview--markdown-treesit-current-heading-entry (&optional pos)
+  "Return the nearest Markdown heading tree-sitter entry at or before POS."
+  (let ((target (or pos (point)))
+        (result nil))
+    (dolist (entry (beacon-preview--markdown-treesit-heading-entries))
+      (when (<= (alist-get 'begin entry) target)
+        (setq result entry)))
+    result))
+
+(defun beacon-preview--markdown-treesit-current-heading-info (&optional pos)
+  "Return nearest Markdown heading info at or before POS, or nil."
+  (when-let ((entry (beacon-preview--markdown-treesit-current-heading-entry pos)))
+    (list :level (alist-get 'level entry)
+          :text (alist-get 'text entry)
+          :pos (alist-get 'begin entry))))
+
+(defun beacon-preview--markdown-treesit-heading-occurrence (heading)
+  "Return 1-based occurrence count for Markdown HEADING using tree-sitter."
+  (let* ((target-level (plist-get heading :level))
+         (target-text (plist-get heading :text))
+         (current-entry (beacon-preview--markdown-treesit-current-heading-entry (point)))
+         (target-pos (or (plist-get heading :pos)
+                         (and current-entry
+                              (= (alist-get 'level current-entry) target-level)
+                              (string= (or (alist-get 'text current-entry) "")
+                                       (or target-text ""))
+                              (alist-get 'begin current-entry))))
+         (count 0))
+    (dolist (entry (beacon-preview--markdown-treesit-heading-entries))
+      (when (<= (alist-get 'begin entry) target-pos)
+        (when (and (= (alist-get 'level entry) target-level)
+                   (string= (or (alist-get 'text entry) "")
+                            (or target-text "")))
+          (setq count (1+ count)))))
+    (and (> count 0) count)))
+
+(defun beacon-preview--org-element-available-p ()
+  "Return non-nil when Org structural parsing is available in this buffer."
+  (and (derived-mode-p 'org-mode)
+       (fboundp 'org-element-parse-buffer)
+       (fboundp 'org-element-map)
+       (fboundp 'org-element-type)
+       (fboundp 'org-element-property)))
+
+(defun beacon-preview--org-element-paragraph-suppressed-p (element)
+  "Return non-nil when Org paragraph ELEMENT should not produce a beacon."
+  (let ((parent (org-element-property :parent element))
+        (suppressed nil))
+    (while (and parent (not suppressed))
+      (when (memq (org-element-type parent)
+                  '(item quote-block src-block example-block table table-row table-cell))
+        (setq suppressed t))
+      (setq parent (org-element-property :parent parent)))
+    suppressed))
+
+(defun beacon-preview--org-element-kind (element)
+  "Return manifest kind string for Org ELEMENT, or nil."
+  (pcase (org-element-type element)
+    (`headline
+     (format "h%d" (org-element-property :level element)))
+    (`item "li")
+    (`paragraph
+     (unless (beacon-preview--org-element-paragraph-suppressed-p element)
+       "p"))
+    (`quote-block "blockquote")
+    ((or `src-block `example-block) "pre")
+    (`table "table")
+    (_ nil)))
+
+(defun beacon-preview--org-element-entry-metadata (element kind)
+  "Return extra metadata alist for Org ELEMENT of manifest KIND."
+  (let ((metadata nil))
+    (when (string-match "\\`h\\([0-9]+\\)\\'" kind)
+      (setq metadata
+            (append metadata
+                    (list (cons 'level (string-to-number (match-string 1 kind)))))))
+    (when (string-match "\\`h[0-9]+\\'" kind)
+      (setq metadata
+            (append metadata
+                    (list (cons 'text (org-element-property :raw-value element))))))
+    (append metadata
+            (list (cons 'kind kind)
+                  (cons 'begin (org-element-property :begin element))
+                  (cons 'end (max (org-element-property :begin element)
+                                  (1- (org-element-property :end element))))))))
+
+(defun beacon-preview--org-element-build-cache ()
+  "Build and return Org structural entries derived from `org-element'."
+  (when (beacon-preview--org-element-available-p)
+    (let ((ast (org-element-parse-buffer))
+          (ordered nil)
+          (kind-tables (make-hash-table :test #'equal)))
+      (org-element-map ast
+          '(headline item paragraph quote-block src-block example-block table)
+        (lambda (element)
+          (when-let ((kind (beacon-preview--org-element-kind element)))
+            (let* ((index (1+ (length (gethash kind kind-tables nil))))
+                   (entry (append
+                           (list (cons 'index index))
+                           (beacon-preview--org-element-entry-metadata element kind))))
+              (puthash kind
+                       (append (gethash kind kind-tables nil)
+                               (list entry))
+                       kind-tables)
+              (setq ordered (append ordered (list entry))))))
+        nil nil nil t)
+      (list :ordered ordered :by-kind kind-tables))))
+
+(defun beacon-preview--org-element-cache ()
+  "Return cached Org structural entries for the current buffer, or nil."
+  (when (beacon-preview--org-element-available-p)
+    (let ((tick (buffer-chars-modified-tick)))
+      (unless (and beacon-preview--org-element-cache
+                   (equal beacon-preview--org-element-cache-tick tick))
+        (setq beacon-preview--org-element-cache
+              (beacon-preview--org-element-build-cache))
+        (setq beacon-preview--org-element-cache-tick tick))
+      beacon-preview--org-element-cache)))
+
+(defun beacon-preview--org-element-entries-for-kind (kind)
+  "Return cached Org entries for manifest KIND, or nil."
+  (when-let ((cache (beacon-preview--org-element-cache)))
+    (gethash kind (plist-get cache :by-kind))))
+
+(defun beacon-preview--org-element-entry-at-pos (pos &optional kinds)
+  "Return Org entry containing POS.
+
+When KINDS is non-nil, only entries whose `kind' is in that list are
+considered."
+  (when-let ((cache (beacon-preview--org-element-cache)))
+    (seq-find
+     (lambda (entry)
+       (and (or (null kinds)
+                (member (alist-get 'kind entry) kinds))
+            (<= (alist-get 'begin entry) pos)
+            (< pos (alist-get 'end entry))))
+     (plist-get cache :ordered))))
+
+(defun beacon-preview--org-element-entry-at-or-before-pos (pos &optional kinds)
+  "Return Org entry containing POS or ending just before it."
+  (or (beacon-preview--org-element-entry-at-pos pos kinds)
+      (when-let ((cache (beacon-preview--org-element-cache)))
+        (let ((result nil))
+          (dolist (entry (plist-get cache :ordered))
+            (when (and (or (null kinds)
+                           (member (alist-get 'kind entry) kinds))
+                       (< (alist-get 'end entry) pos))
+              (setq result entry)))
+          result))))
+
+(defun beacon-preview--org-element-index-at-pos (kind pos)
+  "Return 1-based Org index for KIND containing POS, or nil."
+  (when-let ((entry (beacon-preview--org-element-entry-at-pos pos (list kind))))
+    (alist-get 'index entry)))
+
+(defun beacon-preview--org-element-position-at-index (kind index)
+  "Return Org position for KIND at 1-based INDEX, or nil."
+  (when-let ((entry (nth (1- index)
+                         (beacon-preview--org-element-entries-for-kind kind))))
+    (alist-get 'begin entry)))
+
+(defun beacon-preview--org-element-heading-entries ()
+  "Return cached Org heading entries in source order."
+  (when-let ((cache (beacon-preview--org-element-cache)))
+    (seq-filter
+     (lambda (entry)
+       (string-match-p "\\`h[0-9]+\\'" (alist-get 'kind entry)))
+     (plist-get cache :ordered))))
+
+(defun beacon-preview--org-element-current-heading-entry (&optional pos)
+  "Return the nearest Org heading entry at or before POS."
+  (let ((target (or pos (point)))
+        (result nil))
+    (dolist (entry (beacon-preview--org-element-heading-entries))
+      (when (<= (alist-get 'begin entry) target)
+        (setq result entry)))
+    result))
+
+(defun beacon-preview--org-element-current-heading-info (&optional pos)
+  "Return nearest Org heading info at or before POS, or nil."
+  (when-let ((entry (beacon-preview--org-element-current-heading-entry pos)))
+    (list :level (alist-get 'level entry)
+          :text (alist-get 'text entry)
+          :pos (alist-get 'begin entry))))
+
+(defun beacon-preview--org-element-heading-occurrence (heading)
+  "Return 1-based occurrence count for Org HEADING using `org-element'."
+  (let* ((target-level (plist-get heading :level))
+         (target-text (plist-get heading :text))
+         (current-entry (beacon-preview--org-element-current-heading-entry (point)))
+         (target-pos (or (plist-get heading :pos)
+                         (and current-entry
+                              (= (alist-get 'level current-entry) target-level)
+                              (string= (or (alist-get 'text current-entry) "")
+                                       (or target-text ""))
+                              (alist-get 'begin current-entry))))
+         (count 0))
+    (dolist (entry (beacon-preview--org-element-heading-entries))
+      (when (<= (alist-get 'begin entry) target-pos)
+        (when (and (= (alist-get 'level entry) target-level)
+                   (string= (or (alist-get 'text entry) "")
+                            (or target-text "")))
+          (setq count (1+ count)))))
+    (and (> count 0) count)))
+
 (defun beacon-preview--org-heading-info-at-point ()
   "Return an Org heading plist at point, including level, text, and position."
-  (save-excursion
-    (beginning-of-line)
-    (when (looking-at "^\\(\\*+\\)[ 	]+\\(.+\\)$")
-      (list :level (length (match-string-no-properties 1))
-            :text (string-trim (match-string-no-properties 2))
-            :pos (line-beginning-position)))))
+  (when-let ((entry (beacon-preview--org-element-entry-at-pos (point))))
+    (when (string-match "\\`h[0-9]+\\'" (alist-get 'kind entry))
+      (list :level (alist-get 'level entry)
+            :text (alist-get 'text entry)
+            :pos (alist-get 'begin entry)))))
 
 (defun beacon-preview--org-current-heading-info ()
   "Return the nearest Org heading at or before point, including `:pos'."
-  (save-excursion
-    (catch 'heading
-      (or (beacon-preview--org-heading-info-at-point)
-          (progn
-            (beginning-of-line)
-            (while (not (bobp))
-              (forward-line -1)
-              (when-let ((heading (beacon-preview--org-heading-info-at-point)))
-                (throw 'heading heading)))
-            nil)))))
+  (beacon-preview--org-element-current-heading-info))
 
 (defun beacon-preview--org-heading-occurrence (heading)
   "Return 1-based occurrence count for Org HEADING up to point."
-  (save-excursion
-    (let ((count 0)
-          (target-level (plist-get heading :level))
-          (target-text (plist-get heading :text))
-          (limit (point)))
-      (save-restriction
-        (narrow-to-region (point-min) limit)
-        (goto-char (point-min))
-        (while (not (eobp))
-          (when-let ((candidate (beacon-preview--org-heading-info-at-point)))
-            (when (and (= (plist-get candidate :level) target-level)
-                       (string= (plist-get candidate :text) target-text))
-              (setq count (1+ count))))
-          (forward-line 1)))
-      count)))
+  (beacon-preview--org-element-heading-occurrence heading))
 
 (defun beacon-preview--org-list-item-beginning-position ()
   "Return the beginning position of the current Org list item, or nil."
-  (save-excursion
-    (beginning-of-line)
-    (when (looking-at "^[ 	]*\\(?:[-+]\\|[0-9]+[.)]\\)[ 	]+\\S-")
-      (line-beginning-position))))
+  (when-let ((entry (beacon-preview--org-element-entry-at-pos (point) '("li"))))
+    (alist-get 'begin entry)))
 
 (defun beacon-preview--org-list-item-index ()
   "Return the 1-based Org list item index at point, or nil."
-  (when-let ((target (beacon-preview--org-list-item-beginning-position)))
-    (save-excursion
-      (goto-char (point-min))
-      (beginning-of-line)
-      (let ((count 0)
-            (found nil))
-        (while (and (not found) (not (eobp)))
-          (when (looking-at "^[ 	]*\\(?:[-+]\\|[0-9]+[.)]\\)[ 	]+\\S-")
-            (setq count (1+ count))
-            (when (= (line-beginning-position) target)
-              (setq found count)))
-          (unless found
-            (forward-line 1)))
-        found))))
-
-(defun beacon-preview--org-paragraph-line-p ()
-  "Return non-nil when the current Org line should count as paragraph content."
-  (and (not (looking-at "^[ 	]*$"))
-       (not (looking-at "^\\*+[ 	]+"))
-       (not (looking-at "^[ 	]*\\(?:[-+]\\|[0-9]+[.)]\\)[ 	]+\\S-"))))
+  (beacon-preview--org-element-index-at-pos "li" (point)))
 
 (defun beacon-preview--org-paragraph-beginning-position ()
   "Return the beginning position of the current Org paragraph block, or nil."
-  (save-excursion
-    (beginning-of-line)
-    (when (beacon-preview--org-paragraph-line-p)
-      (while (and (not (bobp))
-                  (progn
-                    (forward-line -1)
-                    (beacon-preview--org-paragraph-line-p)))
-        nil)
-      (unless (beacon-preview--org-paragraph-line-p)
-        (forward-line 1))
-      (line-beginning-position))))
-
-(defun beacon-preview--org-skip-paragraph-forward ()
-  "Move point to the first line after the current Org paragraph block." 
-  (while (and (beacon-preview--org-paragraph-line-p)
-              (zerop (forward-line 1)))
-    nil))
+  (when-let ((entry (beacon-preview--org-element-entry-at-pos (point) '("p"))))
+    (alist-get 'begin entry)))
 
 (defun beacon-preview--org-paragraph-index ()
   "Return the 1-based Org paragraph index at point, or nil."
-  (when-let ((target (beacon-preview--org-paragraph-beginning-position)))
-    (save-excursion
-      (goto-char (point-min))
-      (beginning-of-line)
-      (let ((count 0)
-            (found nil))
-        (while (and (not found) (not (eobp)))
-          (if (beacon-preview--org-paragraph-line-p)
-              (let ((paragraph-begin (line-beginning-position)))
-                (setq count (1+ count))
-                (when (= paragraph-begin target)
-                  (setq found count))
-                (beacon-preview--org-skip-paragraph-forward))
-            (forward-line 1)))
-        found))))
-
-(defun beacon-preview--org-begin-end-block-info ()
-  "Return Org begin/end block info at point, or nil.
-
-The returned plist contains `:type', `:begin', and `:end' for the surrounding
-`#+begin_...` block when point is inside it or on its delimiters." 
-  (save-excursion
-    (let ((target (point))
-          (case-fold-search t))
-      (beginning-of-line)
-      (catch 'block
-        (while (re-search-backward "^[ 	]*#\\+begin_\\([[:alnum:]_]+\\)\\b" nil t)
-          (let ((begin (line-beginning-position))
-                (type (downcase (match-string-no-properties 1))))
-            (when (re-search-forward
-                   (format "^[ 	]*#\\+end_%s\\b" (regexp-quote type))
-                   nil
-                   t)
-              (let ((end (line-end-position)))
-                (when (and (<= begin target)
-                           (<= target end))
-                  (throw 'block (list :type type :begin begin :end end)))))))))))
+  (beacon-preview--org-element-index-at-pos "p" (point)))
 
 (defun beacon-preview--org-blockquote-beginning-position ()
   "Return the beginning position of the current Org quote block, or nil."
-  (when-let ((block (beacon-preview--org-begin-end-block-info)))
-    (when (member (plist-get block :type) '("quote"))
-      (plist-get block :begin))))
+  (when-let ((entry (beacon-preview--org-element-entry-at-pos
+                     (point)
+                     '("blockquote"))))
+    (alist-get 'begin entry)))
 
 (defun beacon-preview--org-blockquote-index ()
   "Return the 1-based Org quote block index at point, or nil."
-  (when-let ((target (beacon-preview--org-blockquote-beginning-position)))
-    (save-excursion
-      (goto-char (point-min))
-      (let ((count 0)
-            (found nil)
-            (case-fold-search t))
-        (while (and (not found)
-                    (re-search-forward "^[ 	]*#\\+begin_quote\\b" nil t))
-          (setq count (1+ count))
-          (when (= (line-beginning-position) target)
-            (setq found count)))
-        found))))
+  (beacon-preview--org-element-index-at-pos "blockquote" (point)))
 
 (defun beacon-preview--org-source-block-beginning-position ()
   "Return the beginning position of the current Org source/example block, or nil."
-  (when-let ((block (beacon-preview--org-begin-end-block-info)))
-    (when (member (plist-get block :type) '("src" "example"))
-      (plist-get block :begin))))
+  (when-let ((entry (beacon-preview--org-element-entry-at-pos (point) '("pre"))))
+    (alist-get 'begin entry)))
 
 (defun beacon-preview--org-source-block-index ()
   "Return the 1-based Org source/example block index at point, or nil."
-  (when-let ((target (beacon-preview--org-source-block-beginning-position)))
-    (save-excursion
-      (goto-char (point-min))
-      (let ((count 0)
-            (found nil)
-            (case-fold-search t))
-        (while (and (not found)
-                    (re-search-forward "^[ 	]*#\\+begin_\\(src\\|example\\)\\b" nil t))
-          (setq count (1+ count))
-          (when (= (line-beginning-position) target)
-            (setq found count)))
-        found))))
+  (beacon-preview--org-element-index-at-pos "pre" (point)))
 
 (defun beacon-preview--org-table-beginning-position ()
   "Return the beginning position of the current Org table, or nil."
-  (save-excursion
-    (beginning-of-line)
-    (when (looking-at "^[ 	]*|.*|[ 	]*$")
-      (while (and (not (bobp))
-                  (progn
-                    (forward-line -1)
-                    (looking-at "^[ 	]*|.*|[ 	]*$")))
-        nil)
-      (unless (looking-at "^[ 	]*|.*|[ 	]*$")
-        (forward-line 1))
-      (line-beginning-position))))
+  (when-let ((entry (beacon-preview--org-element-entry-at-pos (point) '("table"))))
+    (alist-get 'begin entry)))
 
 (defun beacon-preview--org-table-index ()
   "Return the 1-based Org table index at point, or nil."
-  (when-let ((target (beacon-preview--org-table-beginning-position)))
-    (save-excursion
-      (goto-char (point-min))
-      (beginning-of-line)
-      (let ((count 0)
-            (found nil))
-        (while (and (not found) (not (eobp)))
-          (if (looking-at "^[ 	]*|.*|[ 	]*$")
-              (let ((begin (line-beginning-position)))
-                (setq count (1+ count))
-                (when (= begin target)
-                  (setq found count))
-                (while (and (zerop (forward-line 1))
-                            (looking-at "^[ 	]*|.*|[ 	]*$"))
-                  nil))
-            (forward-line 1)))
-        found))))
+  (beacon-preview--org-element-index-at-pos "table" (point)))
 
 (defun beacon-preview--markdown-blockquote-beginning-position ()
   "Return the beginning position of the current Markdown blockquote, or nil."
-  (save-excursion
-    (beginning-of-line)
-    (unless (beacon-preview--markdown-in-fenced-code-block-p)
-      (when (looking-at "^[ \t]*>[ \t]?")
-        (while (and (not (bobp))
-                    (progn
-                      (forward-line -1)
-                      (looking-at "^[ \t]*>[ \t]?")))
-          nil)
-        (unless (looking-at "^[ \t]*>[ \t]?")
-          (forward-line 1))
-        (line-beginning-position)))))
+  (when-let ((entry (beacon-preview--markdown-treesit-entry-at-pos
+                     (point)
+                     '("blockquote"))))
+    (alist-get 'begin entry)))
 
 (defun beacon-preview--markdown-blockquote-index ()
   "Return the 1-based blockquote index at point, or nil."
-  (when-let ((target (beacon-preview--markdown-blockquote-beginning-position)))
-    (save-excursion
-      (goto-char (point-min))
-      (beginning-of-line)
-      (let ((count 0)
-            (found nil))
-        (while (and (not found) (not (eobp)))
-          (if (and (not (beacon-preview--markdown-in-fenced-code-block-p))
-                   (looking-at "^[ \t]*>[ \t]?"))
-              (let ((begin (line-beginning-position)))
-                (setq count (1+ count))
-                (when (= begin target)
-                  (setq found count))
-                (while (and (zerop (forward-line 1))
-                            (looking-at "^[ \t]*>[ \t]?"))
-                  nil))
-            (forward-line 1)))
-        found))))
+  (beacon-preview--markdown-treesit-index-at-pos "blockquote" (point)))
 
 (defun beacon-preview--markdown-table-beginning-position ()
   "Return the beginning position of the current pipe table, or nil."
-  (save-excursion
-    (beginning-of-line)
-    (unless (beacon-preview--markdown-in-fenced-code-block-p)
-      (when (looking-at "^[ \t]*|.*|[ \t]*$")
-        (let ((current (line-beginning-position)))
-          (forward-line 1)
-          (when (looking-at "^[ \t]*|?[ :-][-:| ]*|[ \t]*$")
-            (goto-char current)
-            (line-beginning-position)))))))
+  (when-let ((entry (beacon-preview--markdown-treesit-entry-at-pos
+                     (point)
+                     '("table"))))
+    (alist-get 'begin entry)))
 
 (defun beacon-preview--markdown-table-index ()
   "Return the 1-based pipe table index at point, or nil."
-  (when-let ((target (beacon-preview--markdown-table-beginning-position)))
-    (save-excursion
-      (goto-char (point-min))
-      (beginning-of-line)
-      (let ((count 0)
-            (found nil))
-        (while (and (not found) (not (eobp)))
-          (if-let ((begin (beacon-preview--markdown-table-beginning-position)))
-              (progn
-                (setq count (1+ count))
-                (when (= begin target)
-                  (setq found count))
-                (forward-line 2)
-                (while (and (not (eobp))
-                            (looking-at "^[ \t]*|.*|[ \t]*$"))
-                  (forward-line 1)))
-            (forward-line 1)))
-        found))))
+  (beacon-preview--markdown-treesit-index-at-pos "table" (point)))
 
 (defun beacon-preview--markdown-list-item-beginning-position ()
   "Return the beginning position of the current Markdown list item, or nil."
-  (save-excursion
-    (beginning-of-line)
-    (unless (beacon-preview--markdown-in-fenced-code-block-p)
-      (when (or (looking-at "^[ \t]*[-+*][ \t]+\\S-")
-                (looking-at "^[ \t]*[0-9]+[.)][ \t]+\\S-"))
-        (line-beginning-position)))))
+  (when-let ((entry (beacon-preview--markdown-treesit-entry-at-pos
+                     (point)
+                     '("li"))))
+    (alist-get 'begin entry)))
 
 (defun beacon-preview--markdown-list-item-index ()
   "Return the 1-based list item index at point, or nil."
-  (when-let ((target (beacon-preview--markdown-list-item-beginning-position)))
-    (save-excursion
-      (goto-char (point-min))
-      (beginning-of-line)
-      (let ((count 0)
-            (found nil))
-        (while (and (not found) (not (eobp)))
-          (unless (beacon-preview--markdown-in-fenced-code-block-p)
-            (when (or (looking-at "^[ \t]*[-+*][ \t]+\\S-")
-                      (looking-at "^[ \t]*[0-9]+[.)][ \t]+\\S-"))
-              (setq count (1+ count))
-              (when (= (line-beginning-position) target)
-                (setq found count))))
-          (unless found
-            (forward-line 1)))
-        found))))
+  (beacon-preview--markdown-treesit-index-at-pos "li" (point)))
 
 (defun beacon-preview--markdown-paragraph-line-p ()
   "Return non-nil when the current line should be treated as paragraph content." 
-  (and (not (beacon-preview--markdown-in-fenced-code-block-p))
-       (not (beacon-preview--markdown-heading-at-point))
-       (not (beacon-preview--markdown-setext-heading-text-at-point))
-       (not (beacon-preview--markdown-setext-heading-at-point))
-       (not (beacon-preview--markdown-list-item-beginning-position))
-       (not (beacon-preview--markdown-blockquote-beginning-position))
-       (not (beacon-preview--markdown-table-beginning-position))
-       (not (looking-at "^[ \t]*$"))
-       (not (looking-at "^[ \t]*>"))
-       (not (looking-at "^[ \t]*|"))
-       (not (looking-at "^[ \t]*[-*_][ \t]*[-*_][ \t]*[-*_][ \t]*$"))
-       (not (beacon-preview--markdown-fence-delimiter-at-point))))
+  (and (not (looking-at "^[ \t]*$"))
+       (when-let ((entry (beacon-preview--markdown-treesit-entry-at-pos
+                          (line-beginning-position)
+                          '("p"))))
+         (let ((begin (alist-get 'begin entry))
+               (end (alist-get 'end entry)))
+           (and (<= begin (line-beginning-position))
+                (<= (line-end-position) (1+ end)))))))
 
 (defun beacon-preview--markdown-paragraph-beginning-position ()
   "Return the beginning position of the current paragraph block, or nil.
 
 Only plain paragraph text is considered here; headings, list items, and fenced
 code blocks are excluded." 
-  (save-excursion
-    (beginning-of-line)
-    (when (beacon-preview--markdown-paragraph-line-p)
-      (while (and (not (bobp))
-                  (progn
-                    (forward-line -1)
-                    (beacon-preview--markdown-paragraph-line-p)))
-        nil)
-      (unless (beacon-preview--markdown-paragraph-line-p)
-        (forward-line 1))
-      (line-beginning-position))))
+  (when-let ((entry (beacon-preview--markdown-treesit-entry-at-pos
+                     (point)
+                     '("p"))))
+    (alist-get 'begin entry)))
 
 (defun beacon-preview--markdown-skip-paragraph-forward ()
   "Move point to the first line after the current paragraph block." 
@@ -1189,62 +1440,14 @@ code blocks are excluded."
 
 (defun beacon-preview--markdown-paragraph-index ()
   "Return the 1-based paragraph index at point, or nil."
-  (when-let ((target (beacon-preview--markdown-paragraph-beginning-position)))
-    (save-excursion
-      (goto-char (point-min))
-      (beginning-of-line)
-      (let ((count 0)
-            (found nil))
-        (while (and (not found) (not (eobp)))
-          (if (beacon-preview--markdown-paragraph-line-p)
-              (let ((paragraph-begin (line-beginning-position)))
-                (setq count (1+ count))
-                (when (= paragraph-begin target)
-                  (setq found count))
-                (beacon-preview--markdown-skip-paragraph-forward))
-            (forward-line 1)))
-        found))))
+  (beacon-preview--markdown-treesit-index-at-pos "p" (point)))
 
 (defun beacon-preview--markdown-fenced-code-block-index ()
   "Return the 1-based fenced code block index at point, or nil.
 
 This counts fenced code blocks in the source buffer using simple Markdown fence
 rules so it can align with Pandoc/beaconified `pre' entries." 
-  (save-excursion
-    (let ((target (point))
-          (count 0)
-          (fence-char nil)
-          (fence-length 0)
-          (fence-begin nil))
-      (goto-char (point-min))
-      (beginning-of-line)
-      (catch 'found
-        (while (not (eobp))
-          (when-let ((delimiter (beacon-preview--markdown-fence-delimiter-at-point)))
-            (let ((char (car delimiter))
-                  (length (cdr delimiter))
-                  (line-begin (line-beginning-position))
-                  (line-end (line-end-position)))
-              (if fence-char
-                  (when (and (eq char fence-char)
-                             (>= length fence-length))
-                    (setq count (1+ count))
-                    (when (and fence-begin
-                               (<= fence-begin target)
-                               (<= target line-end))
-                      (throw 'found count))
-                    (setq fence-char nil
-                          fence-length 0
-                          fence-begin nil))
-                (setq fence-char char
-                      fence-length length
-                      fence-begin line-begin))))
-          (forward-line 1))
-        (when (and fence-begin
-                   (<= fence-begin target))
-          (setq count (1+ count))
-          (throw 'found count))
-        nil))))
+  (beacon-preview--markdown-treesit-index-at-pos "pre" (point)))
 
 (defun beacon-preview--block-anchor-at-pos (pos)
   "Return the block anchor for POS, or nil when none is resolved."
@@ -1253,32 +1456,25 @@ rules so it can align with Pandoc/beaconified `pre' entries."
       (goto-char pos)
       (cond
        ((derived-mode-p 'org-mode)
-        (or (when-let* ((index (beacon-preview--org-source-block-index))
-                        (entry (beacon-preview--manifest-entry-at-index "pre" index))
-                        (anchor (alist-get 'anchor entry)))
-              anchor)
-            (when-let* ((index (beacon-preview--org-blockquote-index))
-                        (entry (beacon-preview--manifest-entry-at-index "blockquote" index))
-                        (anchor (alist-get 'anchor entry)))
-              anchor)
-            (when-let* ((index (beacon-preview--org-table-index))
-                        (entry (beacon-preview--manifest-entry-at-index "table" index))
-                        (anchor (alist-get 'anchor entry)))
-              anchor)
-            (when-let* ((index (beacon-preview--org-list-item-index))
-                        (entry (beacon-preview--manifest-entry-at-index "li" index))
-                        (anchor (alist-get 'anchor entry)))
-              anchor)
-            (when-let* ((index (beacon-preview--org-paragraph-index))
-                        (entry (beacon-preview--manifest-entry-at-index "p" index))
-                        (anchor (alist-get 'anchor entry)))
+        (or (when-let* ((entry (beacon-preview--org-element-entry-at-pos
+                                pos
+                                '("pre" "blockquote" "table" "li" "p")))
+                        (manifest-entry
+                         (beacon-preview--manifest-entry-at-index
+                          (alist-get 'kind entry)
+                          (alist-get 'index entry)))
+                        (anchor (alist-get 'anchor manifest-entry)))
               anchor)))
        (t
-        (or (when (beacon-preview--markdown-in-fenced-code-block-p)
-              (when-let* ((index (beacon-preview--markdown-fenced-code-block-index))
-                          (entry (beacon-preview--manifest-entry-at-index "pre" index))
-                          (anchor (alist-get 'anchor entry)))
-                anchor))
+        (or (when-let* ((entry (beacon-preview--markdown-treesit-entry-at-pos
+                                pos
+                                '("pre" "blockquote" "table" "li" "p")))
+                        (manifest-entry
+                         (beacon-preview--manifest-entry-at-index
+                          (alist-get 'kind entry)
+                         (alist-get 'index entry)))
+                        (anchor (alist-get 'anchor manifest-entry)))
+              anchor)
             (when-let* ((index (beacon-preview--markdown-blockquote-index))
                         (entry (beacon-preview--manifest-entry-at-index "blockquote" index))
                         (anchor (alist-get 'anchor entry)))
@@ -1302,227 +1498,61 @@ rules so it can align with Pandoc/beaconified `pre' entries."
 
 (defun beacon-preview--org-heading-position-at-index (level index)
   "Return the position of the Org heading at LEVEL and 1-based INDEX, or nil."
-  (save-excursion
-    (goto-char (point-min))
-    (beginning-of-line)
-    (let ((count 0)
-          (found nil))
-      (while (and (not found) (not (eobp)))
-        (when-let ((heading (beacon-preview--org-heading-info-at-point)))
-          (when (= (plist-get heading :level) level)
-            (setq count (1+ count))
-            (when (= count index)
-              (setq found (plist-get heading :pos)))))
-        (unless found
-          (forward-line 1)))
-      found)))
+  (let ((count 0)
+        (found nil))
+    (dolist (entry (beacon-preview--org-element-heading-entries))
+      (when (and (not found)
+                 (= (alist-get 'level entry) level))
+        (setq count (1+ count))
+        (when (= count index)
+          (setq found (alist-get 'begin entry)))))
+    found))
 
 (defun beacon-preview--org-list-item-position-at-index (index)
   "Return the position of the Org list item at 1-based INDEX, or nil."
-  (save-excursion
-    (goto-char (point-min))
-    (beginning-of-line)
-    (let ((count 0)
-          (found nil))
-      (while (and (not found) (not (eobp)))
-        (when (looking-at "^[ \t]*\\(?:[-+]\\|[0-9]+[.)]\\)[ \t]+\\S-")
-          (setq count (1+ count))
-          (when (= count index)
-            (setq found (line-beginning-position))))
-        (unless found
-          (forward-line 1)))
-      found)))
+  (beacon-preview--org-element-position-at-index "li" index))
 
 (defun beacon-preview--org-paragraph-position-at-index (index)
   "Return the position of the Org paragraph at 1-based INDEX, or nil."
-  (save-excursion
-    (goto-char (point-min))
-    (beginning-of-line)
-    (let ((count 0)
-          (found nil))
-      (while (and (not found) (not (eobp)))
-        (if (beacon-preview--org-paragraph-line-p)
-            (let ((paragraph-begin (line-beginning-position)))
-              (setq count (1+ count))
-              (when (= count index)
-                (setq found paragraph-begin))
-              (beacon-preview--org-skip-paragraph-forward))
-          (forward-line 1)))
-      found)))
+  (beacon-preview--org-element-position-at-index "p" index))
 
 (defun beacon-preview--org-blockquote-position-at-index (index)
   "Return the position of the Org quote block at 1-based INDEX, or nil."
-  (save-excursion
-    (goto-char (point-min))
-    (let ((count 0)
-          (found nil)
-          (case-fold-search t))
-      (while (and (not found)
-                  (re-search-forward "^[ \t]*#\\+begin_quote\\b" nil t))
-        (setq count (1+ count))
-        (when (= count index)
-          (setq found (line-beginning-position))))
-      found)))
+  (beacon-preview--org-element-position-at-index "blockquote" index))
 
 (defun beacon-preview--org-source-block-position-at-index (index)
   "Return the position of the Org source/example block at 1-based INDEX, or nil."
-  (save-excursion
-    (goto-char (point-min))
-    (let ((count 0)
-          (found nil)
-          (case-fold-search t))
-      (while (and (not found)
-                  (re-search-forward "^[ \t]*#\\+begin_\\(src\\|example\\)\\b" nil t))
-        (setq count (1+ count))
-        (when (= count index)
-          (setq found (line-beginning-position))))
-      found)))
+  (beacon-preview--org-element-position-at-index "pre" index))
 
 (defun beacon-preview--org-table-position-at-index (index)
   "Return the position of the Org table at 1-based INDEX, or nil."
-  (save-excursion
-    (goto-char (point-min))
-    (beginning-of-line)
-    (let ((count 0)
-          (found nil))
-      (while (and (not found) (not (eobp)))
-        (if (looking-at "^[ \t]*|.*|[ \t]*$")
-            (let ((begin (line-beginning-position)))
-              (setq count (1+ count))
-              (when (= count index)
-                (setq found begin))
-              (while (and (zerop (forward-line 1))
-                          (looking-at "^[ \t]*|.*|[ \t]*$"))
-                nil))
-          (forward-line 1)))
-      found)))
+  (beacon-preview--org-element-position-at-index "table" index))
 
 (defun beacon-preview--markdown-heading-position-at-index (level index)
   "Return the position of the Markdown heading at LEVEL and 1-based INDEX, or nil."
-  (save-excursion
-    (goto-char (point-min))
-    (beginning-of-line)
-    (let ((count 0)
-          (found nil))
-      (while (and (not found) (not (eobp)))
-        (when-let ((heading (or (beacon-preview--markdown-heading-info-at-point)
-                                (beacon-preview--markdown-setext-heading-info-at-point))))
-          (when (= (plist-get heading :level) level)
-            (setq count (1+ count))
-            (when (= count index)
-              (setq found (plist-get heading :pos)))))
-        (unless found
-          (forward-line 1)))
-      found)))
+  (beacon-preview--markdown-treesit-position-at-index
+   (format "h%d" level)
+   index))
 
 (defun beacon-preview--markdown-blockquote-position-at-index (index)
   "Return the position of the Markdown blockquote at 1-based INDEX, or nil."
-  (save-excursion
-    (goto-char (point-min))
-    (beginning-of-line)
-    (let ((count 0)
-          (found nil))
-      (while (and (not found) (not (eobp)))
-        (if (and (not (beacon-preview--markdown-in-fenced-code-block-p))
-                 (looking-at "^[ \t]*>[ \t]?"))
-            (let ((begin (line-beginning-position)))
-              (setq count (1+ count))
-              (when (= count index)
-                (setq found begin))
-              (while (and (zerop (forward-line 1))
-                          (looking-at "^[ \t]*>[ \t]?"))
-                nil))
-          (forward-line 1)))
-      found)))
+  (beacon-preview--markdown-treesit-position-at-index "blockquote" index))
 
 (defun beacon-preview--markdown-table-position-at-index (index)
   "Return the position of the Markdown pipe table at 1-based INDEX, or nil."
-  (save-excursion
-    (goto-char (point-min))
-    (beginning-of-line)
-    (let ((count 0)
-          (found nil))
-      (while (and (not found) (not (eobp)))
-        (if-let ((begin (beacon-preview--markdown-table-beginning-position)))
-            (progn
-              (setq count (1+ count))
-              (when (= count index)
-                (setq found begin))
-              (forward-line 2)
-              (while (and (not (eobp))
-                          (looking-at "^[ \t]*|.*|[ \t]*$"))
-                (forward-line 1)))
-          (forward-line 1)))
-      found)))
+  (beacon-preview--markdown-treesit-position-at-index "table" index))
 
 (defun beacon-preview--markdown-list-item-position-at-index (index)
   "Return the position of the Markdown list item at 1-based INDEX, or nil."
-  (save-excursion
-    (goto-char (point-min))
-    (beginning-of-line)
-    (let ((count 0)
-          (found nil))
-      (while (and (not found) (not (eobp)))
-        (unless (beacon-preview--markdown-in-fenced-code-block-p)
-          (when (or (looking-at "^[ \t]*[-+*][ \t]+\\S-")
-                    (looking-at "^[ \t]*[0-9]+[.)][ \t]+\\S-"))
-            (setq count (1+ count))
-            (when (= count index)
-              (setq found (line-beginning-position)))))
-        (unless found
-          (forward-line 1)))
-      found)))
+  (beacon-preview--markdown-treesit-position-at-index "li" index))
 
 (defun beacon-preview--markdown-paragraph-position-at-index (index)
   "Return the position of the Markdown paragraph at 1-based INDEX, or nil."
-  (save-excursion
-    (goto-char (point-min))
-    (beginning-of-line)
-    (let ((count 0)
-          (found nil))
-      (while (and (not found) (not (eobp)))
-        (if (beacon-preview--markdown-paragraph-line-p)
-            (let ((paragraph-begin (line-beginning-position)))
-              (setq count (1+ count))
-              (when (= count index)
-                (setq found paragraph-begin))
-              (beacon-preview--markdown-skip-paragraph-forward))
-          (forward-line 1)))
-      found)))
+  (beacon-preview--markdown-treesit-position-at-index "p" index))
 
 (defun beacon-preview--markdown-fenced-code-block-position-at-index (index)
   "Return the position of the Markdown fenced code block at 1-based INDEX, or nil."
-  (save-excursion
-    (let ((count 0)
-          (fence-char nil)
-          (fence-length 0)
-          (fence-begin nil)
-          (found nil))
-      (goto-char (point-min))
-      (beginning-of-line)
-      (while (and (not found) (not (eobp)))
-        (when-let ((delimiter (beacon-preview--markdown-fence-delimiter-at-point)))
-          (let ((char (car delimiter))
-                (length (cdr delimiter))
-                (line-begin (line-beginning-position)))
-            (if fence-char
-                (when (and (eq char fence-char)
-                           (>= length fence-length))
-                  (setq count (1+ count))
-                  (when (= count index)
-                    (setq found fence-begin))
-                  (setq fence-char nil
-                        fence-length 0
-                        fence-begin nil))
-              (setq fence-char char
-                    fence-length length
-                    fence-begin line-begin))))
-        (forward-line 1))
-      (or found
-          (when fence-begin
-            (setq count (1+ count))
-            (when (= count index)
-              fence-begin))))))
+  (beacon-preview--markdown-treesit-position-at-index "pre" index))
 
 (defun beacon-preview--source-position-for-kind-index (kind index)
   "Return a source position for manifest KIND at 1-based INDEX, or nil."
@@ -1561,28 +1591,164 @@ rules so it can align with Pandoc/beaconified `pre' entries."
        ((equal kind "p")
         (beacon-preview--markdown-paragraph-position-at-index index)))))))
 
+(defun beacon-preview--markdown-heading-range-at-pos (pos)
+  "Return a Markdown heading range plist containing POS, or nil."
+  (when-let ((entry (beacon-preview--markdown-treesit-current-heading-entry pos)))
+    (let ((level (alist-get 'level entry))
+          (begin (alist-get 'begin entry))
+          (end (point-max)))
+      (catch 'done
+        (dolist (candidate (beacon-preview--markdown-treesit-heading-entries))
+          (when (and (> (alist-get 'begin candidate) begin)
+                     (<= (alist-get 'level candidate) level))
+            (setq end (max begin (1- (alist-get 'begin candidate))))
+            (throw 'done nil))))
+      (list :begin begin :end end))))
+
+(defun beacon-preview--org-heading-range-at-pos (pos)
+  "Return an Org heading range plist containing POS, or nil."
+  (when-let ((entry (beacon-preview--org-element-current-heading-entry pos)))
+    (let ((level (alist-get 'level entry))
+          (begin (alist-get 'begin entry))
+          (end (point-max)))
+      (catch 'done
+        (dolist (candidate (beacon-preview--org-element-heading-entries))
+          (when (and (> (alist-get 'begin candidate) begin)
+                     (<= (alist-get 'level candidate) level))
+            (setq end (max begin (1- (alist-get 'begin candidate))))
+            (throw 'done nil))))
+      (list :begin begin :end end))))
+
+(defun beacon-preview--org-paragraph-range-at-pos (pos)
+  "Return an Org paragraph range plist containing POS, or nil."
+  (when-let ((entry (beacon-preview--org-element-entry-at-pos pos '("p"))))
+    (list :begin (alist-get 'begin entry)
+          :end (alist-get 'end entry))))
+
+(defun beacon-preview--org-blockquote-range-at-pos (pos)
+  "Return an Org quote block range plist containing POS, or nil."
+  (when-let ((entry (beacon-preview--org-element-entry-at-pos pos '("blockquote"))))
+    (list :begin (alist-get 'begin entry)
+          :end (alist-get 'end entry))))
+
+(defun beacon-preview--org-source-block-range-at-pos (pos)
+  "Return an Org source/example block range plist containing POS, or nil."
+  (when-let ((entry (beacon-preview--org-element-entry-at-pos pos '("pre"))))
+    (list :begin (alist-get 'begin entry)
+          :end (alist-get 'end entry))))
+
+(defun beacon-preview--org-table-range-at-pos (pos)
+  "Return an Org table range plist containing POS, or nil."
+  (when-let ((entry (beacon-preview--org-element-entry-at-pos pos '("table"))))
+    (list :begin (alist-get 'begin entry)
+          :end (alist-get 'end entry))))
+
+(defun beacon-preview--markdown-paragraph-range-at-pos (pos)
+  "Return a Markdown paragraph range plist containing POS, or nil."
+  (when-let ((entry (beacon-preview--markdown-treesit-entry-at-pos pos '("p"))))
+    (list :begin (alist-get 'begin entry)
+          :end (alist-get 'end entry))))
+
+(defun beacon-preview--markdown-blockquote-range-at-pos (pos)
+  "Return a Markdown blockquote range plist containing POS, or nil."
+  (when-let ((entry (beacon-preview--markdown-treesit-entry-at-pos pos '("blockquote"))))
+    (list :begin (alist-get 'begin entry)
+          :end (alist-get 'end entry))))
+
+(defun beacon-preview--markdown-table-range-at-pos (pos)
+  "Return a Markdown pipe table range plist containing POS, or nil."
+  (when-let ((entry (beacon-preview--markdown-treesit-entry-at-pos pos '("table"))))
+    (list :begin (alist-get 'begin entry)
+          :end (alist-get 'end entry))))
+
+(defun beacon-preview--markdown-fenced-code-block-range-at-pos (pos)
+  "Return a Markdown fenced code block range plist containing POS, or nil."
+  (when-let ((entry (beacon-preview--markdown-treesit-entry-at-pos pos '("pre"))))
+    (list :begin (alist-get 'begin entry)
+          :end (alist-get 'end entry))))
+
+(defun beacon-preview--source-block-range-for-kind-index (kind index)
+  "Return a source block range plist for manifest KIND at 1-based INDEX, or nil."
+  (when-let ((position (beacon-preview--source-position-for-kind-index kind index)))
+    (save-excursion
+      (goto-char position)
+      (cond
+       ((derived-mode-p 'org-mode)
+        (cond
+         ((string-match "\\`h\\([1-6]\\)\\'" kind)
+          (beacon-preview--org-heading-range-at-pos position))
+         ((equal kind "pre")
+          (beacon-preview--org-source-block-range-at-pos position))
+         ((equal kind "blockquote")
+          (beacon-preview--org-blockquote-range-at-pos position))
+         ((equal kind "table")
+          (beacon-preview--org-table-range-at-pos position))
+         ((equal kind "p")
+          (beacon-preview--org-paragraph-range-at-pos position))
+         (t nil)))
+       (t
+        (cond
+         ((string-match "\\`h\\([1-6]\\)\\'" kind)
+          (beacon-preview--markdown-heading-range-at-pos position))
+         ((equal kind "pre")
+          (beacon-preview--markdown-fenced-code-block-range-at-pos position))
+         ((equal kind "blockquote")
+          (beacon-preview--markdown-blockquote-range-at-pos position))
+         ((equal kind "table")
+          (beacon-preview--markdown-table-range-at-pos position))
+         ((equal kind "p")
+          (beacon-preview--markdown-paragraph-range-at-pos position))
+         (t nil)))))))
+
+(defun beacon-preview--position-in-range-by-progress (range progress)
+  "Return a position within RANGE according to PROGRESS, or nil.
+
+RANGE is a plist containing `:begin' and `:end'.  PROGRESS should be a number
+in the inclusive `[0.0, 1.0]' range."
+  (when (and (numberp progress)
+             range)
+    (let* ((begin (plist-get range :begin))
+           (end (plist-get range :end)))
+      (when (and (integer-or-marker-p begin)
+                 (integer-or-marker-p end)
+                 (<= begin end))
+        (save-excursion
+          (goto-char begin)
+          (let* ((begin-line (line-number-at-pos begin))
+                 (end-line (line-number-at-pos end))
+                 (line-span (max 0 (- end-line begin-line)))
+                 (offset (truncate (* (beacon-preview--clamp-ratio progress)
+                                      line-span))))
+            (forward-line offset)
+            (line-beginning-position)))))))
+
 (defun beacon-preview--apply-preview-entry-to-source (entry source-buffer)
   "Move SOURCE-BUFFER to the position identified by preview manifest ENTRY.
 
-When ENTRY includes a `ratio' field, try to place the source position at a
-similar vertical ratio in the source window."
+When ENTRY includes `block_progress', place point within the resolved source
+block approximately by logical line.  Otherwise prefer the source block start
+near the top of the window."
   (with-current-buffer source-buffer
     (let* ((kind (alist-get 'kind entry))
            (index (alist-get 'index entry))
+           (block-progress (alist-get 'block_progress entry))
            (ratio (alist-get 'ratio entry))
-           (position (beacon-preview--source-position-for-kind-index kind index)))
+           (position (beacon-preview--source-position-for-kind-index kind index))
+           (range (beacon-preview--source-block-range-for-kind-index kind index))
+           (target (or (beacon-preview--position-in-range-by-progress
+                        range
+                        block-progress)
+                       position)))
       (unless position
         (user-error "No source position found for preview %s #%s" kind index))
       (let ((window (beacon-preview--show-source-buffer source-buffer)))
-        (unless (= position (point))
+        (unless (= target (point))
           (push-mark (point) t))
-        (goto-char position)
-        (set-window-point window position)
-        (if (numberp ratio)
-            (beacon-preview--recenter-window-to-ratio window ratio)
-          (with-selected-window window
-            (recenter)))
-        position))))
+        (goto-char target)
+        (set-window-point window target)
+        (ignore ratio)
+        (beacon-preview--align-window-to-top window)
+        target))))
 
 (defun beacon-preview--nearest-block-source-position-at-pos (pos)
   "Return a nearby source block start for POS, preferring the preceding block."
@@ -1590,20 +1756,27 @@ similar vertical ratio in the source window."
     (goto-char pos)
     (cond
      ((derived-mode-p 'org-mode)
-      (or (beacon-preview--org-source-block-beginning-position)
-          (beacon-preview--org-blockquote-beginning-position)
-          (beacon-preview--org-table-beginning-position)
-          (beacon-preview--org-list-item-beginning-position)
-          (beacon-preview--org-paragraph-beginning-position)
+      (or (when-let ((entry (beacon-preview--org-element-entry-at-pos
+                             (point)
+                             '("pre" "blockquote" "table" "li" "p"))))
+            (alist-get 'begin entry))
           (progn
             (skip-chars-backward " \t\n")
-            (or (beacon-preview--org-source-block-beginning-position)
-                (beacon-preview--org-blockquote-beginning-position)
-                (beacon-preview--org-table-beginning-position)
-                (beacon-preview--org-list-item-beginning-position)
-                (beacon-preview--org-paragraph-beginning-position)))))
+            (or (when-let ((entry (beacon-preview--org-element-entry-at-or-before-pos
+                                   (point)
+                                   '("pre" "blockquote" "table" "li" "p"))))
+                  (alist-get 'begin entry))
+                (when (> (point) (point-min))
+                  (when-let ((entry (beacon-preview--org-element-entry-at-pos
+                                     (1- (point))
+                                     '("pre" "blockquote" "table" "li" "p"))))
+                    (alist-get 'begin entry)))))))
      (t
-      (or (when-let ((block (beacon-preview--markdown-current-fenced-code-block-info)))
+      (or (when-let ((entry (beacon-preview--markdown-treesit-entry-at-pos
+                             (point)
+                             '("pre" "blockquote" "table" "li" "p"))))
+            (alist-get 'begin entry))
+          (when-let ((block (beacon-preview--markdown-current-fenced-code-block-info)))
             (plist-get block :begin))
           (beacon-preview--markdown-blockquote-beginning-position)
           (beacon-preview--markdown-table-beginning-position)
@@ -1611,7 +1784,11 @@ similar vertical ratio in the source window."
           (beacon-preview--markdown-paragraph-beginning-position)
           (progn
             (skip-chars-backward " \t\n")
-            (or (when-let ((block (beacon-preview--markdown-current-fenced-code-block-info)))
+            (or (when-let ((entry (beacon-preview--markdown-treesit-entry-at-or-before-pos
+                                   (point)
+                                   '("pre" "blockquote" "table" "li" "p"))))
+                  (alist-get 'begin entry))
+                (when-let ((block (beacon-preview--markdown-current-fenced-code-block-info)))
                   (plist-get block :begin))
                 (beacon-preview--markdown-blockquote-beginning-position)
                 (beacon-preview--markdown-table-beginning-position)
@@ -1654,7 +1831,9 @@ next block."
     (or (beacon-preview--block-anchor-at-pos (point))
         (progn
           (skip-chars-backward " \t\n")
-          (beacon-preview--block-anchor-at-pos (point))))))
+          (or (beacon-preview--block-anchor-at-pos (point))
+              (when (> (point) (point-min))
+                (beacon-preview--block-anchor-at-pos (1- (point)))))))))
 
 (defun beacon-preview--edited-anchors ()
   "Return de-duplicated block anchors for recently edited positions."
@@ -2454,10 +2633,11 @@ If no preview is live yet for the current source buffer, start one first."
    script))
 
 (defun beacon-preview--visible-preview-entry-script ()
-  "Return JavaScript that reports a visible preview beacon near viewport center.
+  "Return JavaScript that reports a visible preview beacon near viewport top.
 
 The returned JSON includes a `ratio' field describing the selected beacon's
-effective vertical position within the preview viewport."
+effective vertical position within the preview viewport, plus optional
+`block_progress' when the viewport is inside a long block."
   (concat
    "(function () {"
    "  if (!window.BeaconPreview || !Array.isArray(window.BeaconPreview.manifest)) {"
@@ -2465,50 +2645,48 @@ effective vertical position within the preview viewport."
    "  }"
    "  var supported = {h1:true,h2:true,h3:true,h4:true,h5:true,h6:true,p:true,li:true,blockquote:true,pre:true,table:true};"
    "  var viewportHeight = Math.max(window.innerHeight || 0, 1);"
-   "  var viewportCenter = viewportHeight / 2;"
    "  function elementMetrics(element) {"
    "    if (!element) { return null; }"
    "    var rect = element.getBoundingClientRect();"
    "    var visibleTop = Math.max(rect.top, 0);"
    "    var visibleBottom = Math.min(rect.bottom, viewportHeight);"
    "    if (visibleBottom <= visibleTop) { return null; }"
-   "    var focusY = Math.min(Math.max(viewportCenter, visibleTop), visibleBottom);"
-   "    var distance = Math.abs(focusY - viewportCenter);"
    "    var visibleSpan = visibleBottom - visibleTop;"
+   "    var startVisible = rect.top >= 0 && rect.top < viewportHeight;"
+   "    var spansViewportTop = rect.top < 0 && rect.bottom > 0;"
+   "    var blockProgress = spansViewportTop ? Math.min(Math.max((-rect.top) / Math.max(rect.height, 1), 0), 1) : 0;"
+   "    var focusY = startVisible ? rect.top : visibleTop;"
    "    return {"
    "      rectTop: rect.top,"
    "      rectBottom: rect.bottom,"
-   "      visibleTop: visibleTop,"
-   "      visibleBottom: visibleBottom,"
-   "      visibleSpan: visibleSpan,"
-   "      focusY: focusY,"
-   "      ratio: focusY / viewportHeight,"
-   "      distance: distance"
-   "    };"
+    "      visibleTop: visibleTop,"
+    "      visibleBottom: visibleBottom,"
+    "      visibleSpan: visibleSpan,"
+    "      focusY: focusY,"
+    "      ratio: focusY / viewportHeight,"
+   "      startVisible: startVisible,"
+   "      spansViewportTop: spansViewportTop,"
+   "      blockProgress: blockProgress"
+    "    };"
    "  }"
-   "  var best = null;"
+   "  var starts = [];"
+   "  var spanning = [];"
    "  for (var i = 0; i < window.BeaconPreview.manifest.length; i += 1) {"
    "    var entry = window.BeaconPreview.manifest[i];"
    "    if (!entry || !supported[entry.kind]) { continue; }"
    "    var element = document.getElementById(entry.anchor);"
    "    var metrics = elementMetrics(element);"
    "    if (!metrics) { continue; }"
-   "    if (!best"
-   "        || metrics.distance < best.distance"
-   "        || (metrics.distance === best.distance && metrics.visibleSpan > best.visibleSpan)"
-   "        || (metrics.distance === best.distance && metrics.visibleSpan === best.visibleSpan && metrics.rectTop < best.rectTop)) {"
-   "      best = {"
-   "        anchor: entry.anchor,"
-   "        kind: entry.kind,"
-   "        index: entry.index,"
-   "        ratio: metrics.ratio,"
-   "        distance: metrics.distance,"
-   "        visibleSpan: metrics.visibleSpan,"
-   "        rectTop: metrics.rectTop"
-   "      };"
+   "    if (metrics.startVisible) {"
+   "      starts.push({anchor: entry.anchor, kind: entry.kind, index: entry.index, ratio: metrics.ratio, block_progress: 0, rectTop: metrics.rectTop});"
+   "    } else if (metrics.spansViewportTop) {"
+   "      spanning.push({anchor: entry.anchor, kind: entry.kind, index: entry.index, ratio: metrics.ratio, block_progress: metrics.blockProgress, rectTop: metrics.rectTop});"
    "    }"
    "  }"
-   "  return best ? JSON.stringify({anchor: best.anchor, kind: best.kind, index: best.index, ratio: best.ratio}) : '';"
+   "  starts.sort(function (a, b) { return a.rectTop - b.rectTop; });"
+   "  spanning.sort(function (a, b) { return b.rectTop - a.rectTop; });"
+   "  var best = starts[0] || spanning[0] || null;"
+   "  return best ? JSON.stringify({anchor: best.anchor, kind: best.kind, index: best.index, ratio: best.ratio, block_progress: best.block_progress}) : '';"
    "})()"))
 
 (defun beacon-preview--decode-visible-preview-entry (value)
@@ -2617,126 +2795,15 @@ source buffer to that block or heading."
   (interactive)
   (beacon-preview--execute-script "window.location.reload();"))
 
-(defun beacon-preview--markdown-fence-delimiter-at-point ()
-  "Return fenced code delimiter info at point, or nil when not on a fence line.
-
-The return value is a cons cell `(CHAR . LENGTH)' describing the fence marker.
-Only Markdown-style backtick and tilde fences with up to three spaces of
-indentation are recognized."
-  (save-excursion
-    (beginning-of-line)
-    (cond
-     ((looking-at "^[ \t]\\{0,3\\}\\(```+\\)[ \t]*[^`]*$")
-      (cons ?` (length (match-string-no-properties 1))))
-     ((looking-at "^[ \t]\\{0,3\\}\\(~~~+\\)[ \t]*[^~]*$")
-      (cons ?~ (length (match-string-no-properties 1))))
-     (t nil))))
-
-(defun beacon-preview--markdown-in-fenced-code-block-p ()
-  "Return non-nil when point is inside a fenced code block.
-
-This includes lines within the fence contents and the closing fence line while
-scanning from the start of the buffer using simple Markdown fence rules."
-  (save-excursion
-    (let ((target (line-beginning-position))
-          (fence-char nil)
-          (fence-length 0)
-          (done nil))
-      (goto-char (point-min))
-      (beginning-of-line)
-      (while (and (not done)
-                  (<= (line-beginning-position) target))
-        (when-let ((delimiter (beacon-preview--markdown-fence-delimiter-at-point)))
-          (let ((char (car delimiter))
-                (length (cdr delimiter)))
-            (if fence-char
-                (when (and (eq char fence-char)
-                           (>= length fence-length))
-                  (setq fence-char nil
-                        fence-length 0))
-              (setq fence-char char
-                    fence-length length))))
-        (setq done (= (line-beginning-position) target))
-        (unless done
-          (when (not (zerop (forward-line 1)))
-            (setq done t))))
-      fence-char)))
-
-(defun beacon-preview--markdown-heading-text-at-point ()
-  "Return ATX Markdown heading text at point, or nil if the line is not a heading."
-  (save-excursion
-    (beginning-of-line)
-    (unless (beacon-preview--markdown-in-fenced-code-block-p)
-      (when (looking-at "^[ \t]\\{0,3\\}\\(#+\\)[ \t]+\\(.+?\\)[ \t]*#*[ \t]*$")
-        (let ((level (length (match-string-no-properties 1))))
-          (when (<= level 6)
-            (list :level level
-                  :text (string-trim (match-string-no-properties 2)))))))))
-
-(defun beacon-preview--markdown-setext-heading-text-at-point ()
-  "Return setext heading text at point, or nil if the current line is not a setext heading text line."
-  (save-excursion
-    (beginning-of-line)
-    (unless (beacon-preview--markdown-in-fenced-code-block-p)
-      (let ((text (string-trim
-                   (buffer-substring-no-properties
-                    (line-beginning-position)
-                    (line-end-position)))))
-        (when (and (not (string-empty-p text))
-                   (zerop (forward-line 1))
-                   (not (beacon-preview--markdown-in-fenced-code-block-p))
-                   (looking-at "^[ \t]\\{0,3\\}\\(=+\\|-+\\)[ \t]*$"))
-          (list :level (if (eq (char-after (match-beginning 1)) ?=) 1 2)
-                :text text))))))
-
-(defun beacon-preview--markdown-setext-heading-at-point ()
-  "Return setext heading plist at point, or nil if not on a setext underline."
-  (save-excursion
-    (beginning-of-line)
-    (unless (beacon-preview--markdown-in-fenced-code-block-p)
-      (when (looking-at "^[ \t]\\{0,3\\}\\(=+\\|-+\\)[ \t]*$")
-        (let ((level (if (eq (char-after (match-beginning 1)) ?=) 1 2)))
-          (when (zerop (forward-line -1))
-            (unless (beacon-preview--markdown-in-fenced-code-block-p)
-              (let ((text (string-trim
-                           (buffer-substring-no-properties
-                            (line-beginning-position)
-                            (line-end-position)))))
-                (unless (string-empty-p text)
-                  (list :level level :text text))))))))))
-
-(defun beacon-preview--markdown-heading-at-point ()
-  "Return a Markdown heading plist at point, or nil."
-  (or (beacon-preview--markdown-heading-text-at-point)
-      (beacon-preview--markdown-setext-heading-at-point)))
-
-(defun beacon-preview--markdown-heading-info-at-point ()
-  "Return a Markdown heading plist at point, including its source position."
-  (when-let ((heading (beacon-preview--markdown-heading-at-point)))
-    (append heading (list :pos (line-beginning-position)))))
-
-(defun beacon-preview--markdown-setext-heading-info-at-point ()
-  "Return setext heading text at point or above, including source position."
-  (save-excursion
-    (beginning-of-line)
-    (when-let ((heading (beacon-preview--markdown-setext-heading-text-at-point)))
-      (forward-line -1)
-      (append heading (list :pos (line-beginning-position))))))
+(defun beacon-preview--markdown-heading-entry-at-point ()
+  "Return the Markdown heading tree-sitter entry at point, or nil."
+  (beacon-preview--markdown-treesit-entry-at-pos
+   (point)
+   '("h1" "h2" "h3" "h4" "h5" "h6")))
 
 (defun beacon-preview--markdown-current-heading-info ()
   "Return the nearest Markdown heading at or before point, including `:pos'."
-  (save-excursion
-    (catch 'heading
-      (or (beacon-preview--markdown-heading-info-at-point)
-          (beacon-preview--markdown-setext-heading-info-at-point)
-          (progn
-            (beginning-of-line)
-            (while (not (bobp))
-              (forward-line -1)
-              (when-let ((heading (or (beacon-preview--markdown-heading-info-at-point)
-                                      (beacon-preview--markdown-setext-heading-info-at-point))))
-                (throw 'heading heading)))
-            nil)))))
+  (beacon-preview--markdown-treesit-current-heading-info))
 
 (defun beacon-preview--markdown-current-heading ()
   "Return the nearest Markdown heading text at or before point.
@@ -2750,22 +2817,7 @@ The search is intentionally small and predictable for the prototype."
   "Return 1-based occurrence count for HEADING up to point.
 
 HEADING is a plist with :level and :text."
-  (save-excursion
-    (let ((count 0)
-          (target-level (plist-get heading :level))
-          (target-text (plist-get heading :text))
-          (limit (point)))
-      (save-restriction
-        (narrow-to-region (point-min) limit)
-        (goto-char (point-min))
-        (while (not (eobp))
-          (when-let ((candidate (or (beacon-preview--markdown-heading-text-at-point)
-                                    (beacon-preview--markdown-setext-heading-text-at-point))))
-            (when (and (= (plist-get candidate :level) target-level)
-                       (string= (plist-get candidate :text) target-text))
-              (setq count (1+ count))))
-          (forward-line 1)))
-      count)))
+  (beacon-preview--markdown-treesit-heading-occurrence heading))
 
 (defun beacon-preview--pandoc-like-slug (text)
   "Convert TEXT into a simple Pandoc-like heading anchor.
@@ -2826,7 +2878,9 @@ This aims to be closer to Pandoc's generated heading identifiers."
   "Resolve HEADING through the loaded manifest if possible."
   (let* ((kind (format "h%d" (plist-get heading :level)))
          (text (plist-get heading :text))
-         (occurrence (beacon-preview--markdown-heading-occurrence heading))
+         (occurrence (if (derived-mode-p 'org-mode)
+                         (beacon-preview--org-heading-occurrence heading)
+                       (beacon-preview--markdown-heading-occurrence heading)))
          (matches nil))
     (dolist (entry (beacon-preview--manifest-entries))
       (when (and (equal (alist-get 'kind entry) kind)

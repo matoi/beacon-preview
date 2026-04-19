@@ -282,6 +282,73 @@
       (should (string= (beacon-preview-current-block-anchor)
                        "beacon-p-2")))))
 
+(ert-deftest beacon-preview-markdown-heading-position-at-index-prefers-treesit-cache ()
+  (with-temp-buffer
+    (setq-local major-mode 'markdown-mode)
+    (cl-letf (((symbol-function 'beacon-preview--markdown-treesit-position-at-index)
+               (lambda (kind index)
+                 (when (and (equal kind "h3") (= index 2))
+                   42))))
+      (should (= (beacon-preview--markdown-heading-position-at-index 3 2) 42)))))
+
+(ert-deftest beacon-preview-markdown-current-heading-info-prefers-treesit-cache ()
+  (with-temp-buffer
+    (setq-local major-mode 'markdown-mode)
+    (cl-letf (((symbol-function 'beacon-preview--markdown-treesit-current-heading-info)
+               (lambda (&optional _pos)
+                 '(:level 2 :text "Section" :pos 15))))
+      (should (equal (beacon-preview--markdown-current-heading-info)
+                     '(:level 2 :text "Section" :pos 15))))))
+
+(ert-deftest beacon-preview-markdown-heading-occurrence-prefers-treesit-cache ()
+  (with-temp-buffer
+    (setq-local major-mode 'markdown-mode)
+    (cl-letf (((symbol-function 'beacon-preview--markdown-treesit-heading-occurrence)
+               (lambda (_heading) 4)))
+      (should (= (beacon-preview--markdown-heading-occurrence
+                  '(:level 2 :text "Section" :pos 30))
+                 4)))))
+
+(ert-deftest beacon-preview-markdown-paragraph-index-prefers-treesit-cache ()
+  (with-temp-buffer
+    (insert "placeholder\n")
+    (goto-char (point-min))
+    (setq-local major-mode 'markdown-mode)
+    (cl-letf (((symbol-function 'beacon-preview--markdown-treesit-index-at-pos)
+               (lambda (kind pos)
+                 (when (and (equal kind "p") (= pos (point-min)))
+                   7))))
+      (should (= (beacon-preview--markdown-paragraph-index) 7)))))
+
+(ert-deftest beacon-preview-current-block-anchor-prefers-treesit-entry ()
+  (let ((beacon-preview--manifest
+         '(((kind . "li") (index . 3) (anchor . "beacon-li-3")))))
+    (with-temp-buffer
+      (insert "placeholder\n")
+      (goto-char (point-min))
+      (setq-local major-mode 'markdown-mode)
+      (cl-letf (((symbol-function 'beacon-preview--markdown-treesit-entry-at-pos)
+                 (lambda (_pos kinds)
+                   (when (equal kinds '("pre" "blockquote" "table" "li" "p"))
+                     '((kind . "li") (index . 3))))))
+        (should (string= (beacon-preview-current-block-anchor)
+                         "beacon-li-3"))))))
+
+(ert-deftest beacon-preview-markdown-heading-range-at-pos-prefers-treesit-cache ()
+  (with-temp-buffer
+    (setq-local major-mode 'markdown-mode)
+    (cl-letf (((symbol-function 'beacon-preview--markdown-treesit-current-heading-entry)
+               (lambda (&optional _pos)
+                 '((kind . "h2") (level . 2) (begin . 10) (end . 20))))
+              ((symbol-function 'beacon-preview--markdown-treesit-heading-entries)
+               (lambda ()
+                 '(((kind . "h1") (level . 1) (begin . 1) (end . 5))
+                   ((kind . "h2") (level . 2) (begin . 10) (end . 20))
+                   ((kind . "h3") (level . 3) (begin . 30) (end . 40))
+                   ((kind . "h2") (level . 2) (begin . 50) (end . 60))))))
+      (should (equal (beacon-preview--markdown-heading-range-at-pos 35)
+                     '(:begin 10 :end 49))))))
+
 (ert-deftest beacon-preview-org-current-block-anchor-resolves-list-item ()
   (let ((beacon-preview--manifest
          '(((kind . "li") (index . 1) (anchor . "beacon-li-1"))
@@ -605,6 +672,79 @@
     (should (string-match-p "window\\.scrollTo" script))
     (should (string-match-p "setTimeout" script))
     (should (string-match-p "BeaconPreview\\.flashAnchor" script))))
+
+(ert-deftest beacon-preview-visible-preview-entry-script-prefers-viewport-top ()
+  (let ((script (beacon-preview--visible-preview-entry-script)))
+    (should (string-match-p "startVisible" script))
+    (should (string-match-p "spansViewportTop" script))
+    (should (string-match-p "block_progress" script))
+    (should (string-match-p "starts\\.sort" script))
+    (should (string-match-p "spanning\\.sort" script))))
+
+(ert-deftest beacon-preview-decode-visible-preview-entry-preserves-block-progress ()
+  (let ((entry (beacon-preview--decode-visible-preview-entry
+                "{\"anchor\":\"beacon-p-1\",\"kind\":\"p\",\"index\":1,\"ratio\":0.2,\"block_progress\":0.6}")))
+    (should (equal (alist-get 'anchor entry) "beacon-p-1"))
+    (should (= (alist-get 'index entry) 1))
+    (should (= (alist-get 'ratio entry) 0.2))
+    (should (= (alist-get 'block_progress entry) 0.6))))
+
+(ert-deftest beacon-preview-position-in-range-by-progress-uses-logical-lines ()
+  (with-temp-buffer
+    (insert "one\ntwo\nthree\nfour\n")
+    (let ((position (beacon-preview--position-in-range-by-progress
+                     (list :begin (point-min)
+                           :end (point-max))
+                     0.8)))
+      (goto-char position)
+      (should (equal (line-number-at-pos) 4)))))
+
+(ert-deftest beacon-preview-source-block-range-for-markdown-paragraph ()
+  (with-temp-buffer
+    (insert "# Heading\n\nfirst\nsecond\nthird\n\nnext\n")
+    (setq-local major-mode 'markdown-mode)
+    (let ((range (beacon-preview--source-block-range-for-kind-index "p" 1)))
+      (should range)
+      (goto-char (plist-get range :begin))
+      (should (equal (line-number-at-pos) 3))
+      (goto-char (plist-get range :end))
+      (should (equal (line-number-at-pos) 5)))))
+
+(ert-deftest beacon-preview-apply-preview-entry-to-source-uses-block-progress-within-range ()
+  (let ((source-buffer (generate-new-buffer " *beacon-preview-source*"))
+        (preview-buffer (generate-new-buffer " *beacon-preview-preview*"))
+        (original-point nil))
+    (unwind-protect
+        (progn
+          (with-current-buffer source-buffer
+            (insert
+             "# Heading\n\n"
+             "Line 1.\n"
+             "Line 2.\n"
+             "Line 3.\n"
+             "Line 4.\n\n")
+            (setq-local major-mode 'markdown-mode)
+            (setq-local beacon-preview--xwidget-buffer preview-buffer)
+            (setq original-point (point)))
+          (let ((recenter-arg nil))
+            (cl-letf (((symbol-function 'display-buffer)
+                       (lambda (buffer &optional _action)
+                         (set-window-buffer (selected-window) buffer)
+                         (selected-window)))
+                      ((symbol-function 'recenter)
+                       (lambda (&optional arg)
+                         (setq recenter-arg arg))))
+              (beacon-preview--apply-preview-entry-to-source
+               '((kind . "p") (index . 1) (ratio . 0.5) (block_progress . 0.8))
+               source-buffer)
+              (with-current-buffer source-buffer
+                (should (equal (line-number-at-pos (point)) 5))
+                (should (= (mark t) original-point)))
+              (should (eq recenter-arg 0)))))
+      (when (buffer-live-p source-buffer)
+        (kill-buffer source-buffer))
+      (when (buffer-live-p preview-buffer)
+        (kill-buffer preview-buffer)))))
 
 (ert-deftest beacon-preview-edited-anchors-deduplicates-multiple-edits ()
   (let ((beacon-preview--manifest
@@ -1235,7 +1375,7 @@
                        (with-current-buffer preview-buffer
                          (rename-buffer "*xwidget-webkit: README*" t))))
                     ((symbol-function 'run-at-time)
-                     (lambda (_delay _repeat fn)
+                     (lambda (_delay _repeat fn &rest _args)
                        (setq scheduled fn)
                        'timer))
                     ((symbol-function 'xwidget-webkit-execute-script)
@@ -1266,13 +1406,14 @@
                     ((symbol-function 'xwidget-webkit-callback)
                      (lambda (_xwidget _event-type) nil))
                     ((symbol-function 'run-at-time)
-                     (lambda (_delay _repeat fn)
+                     (lambda (_delay _repeat fn &rest _args)
                        (setq scheduled fn)
                        'timer))
                     ((symbol-function 'xwidget-webkit-execute-script)
                      (lambda (_xwidget script)
                        (setq executed script))))
             (beacon-preview--xwidget-callback 'dummy 'load-changed)
+            (setq executed nil)
             (setq beacon-preview--pending-sync-generation 2)
             (funcall scheduled)
             (should-not executed)))
@@ -1324,7 +1465,7 @@
                          'session))
                       ((symbol-function 'xwidget-webkit-execute-script)
                        (lambda (_session _script callback)
-                         (funcall callback "{\"anchor\":\"beacon-p-2\",\"kind\":\"p\",\"index\":2,\"ratio\":0.75}")))
+                         (funcall callback "{\"anchor\":\"beacon-p-2\",\"kind\":\"p\",\"index\":2,\"ratio\":0.1,\"block_progress\":0}")))
                       ((symbol-function 'display-buffer)
                        (lambda (buffer &optional _action)
                          (set-window-buffer (selected-window) buffer)
@@ -1339,8 +1480,7 @@
                 (pop-to-mark-command)
                 (should (= (point) original-point)))
               (should (eq (window-buffer (selected-window)) source-buffer))
-              (should (integerp recenter-arg))
-              (should (> recenter-arg 0)))))
+              (should (eq recenter-arg 0)))))
       (when (buffer-live-p source-buffer)
         (kill-buffer source-buffer))
       (when (buffer-live-p preview-buffer)
