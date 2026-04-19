@@ -14,6 +14,7 @@ It focuses on:
 ## Requirements
 
 - Emacs with xwidgets support
+- Emacs built with libxml support
 - a graphical Emacs session
 - Pandoc available in `PATH`, or configured explicitly from Emacs
 - for Markdown source-side sync: Emacs `treesit` support with the `markdown` grammar available
