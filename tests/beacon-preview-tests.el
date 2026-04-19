@@ -665,6 +665,46 @@
     (should (string-match-p "setTimeout" script))
     (should (string-match-p "BeaconPreview\\.flashAnchor" script))))
 
+(ert-deftest beacon-preview-js-string-literal-escapes-all-terminators ()
+  "Every character that can terminate or reinterpret a JS double-quoted
+string literal (including when embedded in <script>) must be escaped."
+  (should (equal (beacon-preview--js-string-literal "a\"b") "\"a\\\"b\""))
+  (should (equal (beacon-preview--js-string-literal "a\\b") "\"a\\\\b\""))
+  (should (equal (beacon-preview--js-string-literal "a\nb") "\"a\\nb\""))
+  (should (equal (beacon-preview--js-string-literal "a\rb") "\"a\\rb\""))
+  (should (equal (beacon-preview--js-string-literal "a\u2028b") "\"a\\u2028b\""))
+  (should (equal (beacon-preview--js-string-literal "a\u2029b") "\"a\\u2029b\""))
+  (should (equal (beacon-preview--js-string-literal "x</script>y")
+                 "\"x<\\/script>y\""))
+  (should (equal (beacon-preview--js-string-literal "") "\"\""))
+  (should (equal (beacon-preview--js-string-literal nil) "\"\"")))
+
+(ert-deftest beacon-preview-jump-script-neutralizes-hostile-anchor ()
+  "An anchor containing quotes, newlines, or </script> must not break out
+of the generated JS literal: when the `var anchor = ...;` literal is
+parsed back via JSON, it must recover the exact original string."
+  (let* ((anchor "evil\"; alert(1); //\n</script>")
+         (script (beacon-preview--jump-script anchor)))
+    ;; The raw </script> must not survive into the emitted JS (it would
+    ;; let a payload close a surrounding <script> tag when the script is
+    ;; embedded in HTML).
+    (should-not (string-match-p "</script>" script))
+    ;; The generated `var anchor = "...";` literal must round-trip.
+    (should (string-match "var anchor = \\(\"\\(?:[^\"\\\\]\\|\\\\.\\)*\"\\);"
+                          script))
+    (let ((literal (match-string 1 script)))
+      (should (equal (json-parse-string literal) anchor)))))
+
+(ert-deftest beacon-preview-flash-target-script-escapes-anchor ()
+  (let* ((anchor "x\"; y")
+         (script
+          (format
+           (concat "(function () {"
+                   "  return window.BeaconPreview.flashAnchor(%s);"
+                   "})();")
+           (beacon-preview--js-string-literal anchor))))
+    (should (string-match-p "flashAnchor(\"x\\\\\"; y\")" script))))
+
 (ert-deftest beacon-preview-visible-preview-entry-script-prefers-viewport-top ()
   (let ((script (beacon-preview--visible-preview-entry-script)))
     (should (string-match-p "collectEntries" script))
@@ -722,6 +762,115 @@
               (should (equal (alist-get 'anchor (car entries)) "existing"))
               (should (equal kinds '("h2" "li" "blockquote" "div" "pre"))))))
       (delete-file html-file))))
+
+(ert-deftest beacon-preview-postprocess-preview-html-file-does-not-decode-entities-in-code-blocks ()
+  "A Pandoc-escaped payload inside a <pre><code> block must survive the
+round trip unchanged -- the script/style protection must not leak into
+ordinary text nodes."
+  (let ((html-file (make-temp-file "beacon-preview-html-" nil ".html")))
+    (unwind-protect
+        (progn
+          (with-temp-file html-file
+            (insert
+             "<html><body>"
+             "<pre><code>&lt;script&gt;alert(1)&lt;/script&gt;</code></pre>"
+             "</body></html>"))
+          (beacon-preview--postprocess-preview-html-file html-file)
+          (let ((output (with-temp-buffer
+                          (insert-file-contents html-file)
+                          (buffer-string))))
+            ;; The entity-encoded payload must remain entity-encoded.
+            (should-not (string-match-p "<script>alert(1)</script>" output))
+            (should (string-match-p "&lt;script&gt;alert(1)&lt;/script&gt;"
+                                    output))))
+      (delete-file html-file))))
+
+(ert-deftest beacon-preview-postprocess-preview-html-file-preserves-raw-html-in-style ()
+  "Raw HTML written by the user inside <style> (via markdown raw-HTML
+pass-through) must land in the output verbatim, not re-decoded."
+  (let ((html-file (make-temp-file "beacon-preview-html-" nil ".html")))
+    (unwind-protect
+        (progn
+          (with-temp-file html-file
+            (insert
+             "<html><head>"
+             "<style>body::before { content: \"&lt;x&gt;\"; }</style>"
+             "</head><body><p>x</p></body></html>"))
+          (beacon-preview--postprocess-preview-html-file html-file)
+          (let ((output (with-temp-buffer
+                          (insert-file-contents html-file)
+                          (buffer-string))))
+            ;; The pre-encoded entity must remain pre-encoded, not be
+            ;; collapsed to a raw `<x>' that the browser would interpret.
+            (should (string-match-p "\"&lt;x&gt;\"" output))
+            (should-not (string-match-p "\"<x>\"" output))))
+      (delete-file html-file))))
+
+(ert-deftest beacon-preview-postprocess-preview-html-file-preserves-multiple-blocks ()
+  "Multiple independent <script>/<style> blocks must each round-trip
+without cross-contamination."
+  (let ((html-file (make-temp-file "beacon-preview-html-" nil ".html")))
+    (unwind-protect
+        (progn
+          (with-temp-file html-file
+            (insert
+             "<html><head>"
+             "<style>.a > .b { color: red; }</style>"
+             "<style>.c < .d { color: blue; }</style>"
+             "</head><body>"
+             "<script>var a = 1 < 2 && 3 > 2;</script>"
+             "<p>x</p>"
+             "<script>var b = \"q\";</script>"
+             "</body></html>"))
+          (beacon-preview--postprocess-preview-html-file html-file)
+          (let ((output (with-temp-buffer
+                          (insert-file-contents html-file)
+                          (buffer-string))))
+            (should (string-match-p "\\.a > \\.b" output))
+            (should (string-match-p "\\.c < \\.d" output))
+            (should (string-match-p "var a = 1 < 2 && 3 > 2;" output))
+            (should (string-match-p "var b = \"q\";" output))
+            ;; None of the protection tokens should leak into the final HTML.
+            (should-not (string-match-p "__BEACON_PROTECTED_" output))))
+      (delete-file html-file))))
+
+(ert-deftest beacon-preview-postprocess-preview-html-file-neutralizes-hostile-existing-id ()
+  "A Pandoc-provided id containing characters that would break a JS
+string literal must still be safe when it flows through the jump script."
+  (let ((html-file (make-temp-file "beacon-preview-html-" nil ".html")))
+    (unwind-protect
+        (progn
+          (with-temp-file html-file
+            (insert
+             "<html><body>"
+             "<h2 id='evil\"; alert(1); //'>Section</h2>"
+             "</body></html>"))
+          (let* ((cache (beacon-preview--postprocess-preview-html-file html-file))
+                 (entries (plist-get cache :ordered))
+                 (anchor (alist-get 'anchor (car entries)))
+                 (script (beacon-preview--jump-script anchor)))
+            ;; The anchor is preserved (libxml handles attribute escaping),
+            ;; and the JS literal neutralizes the injection attempt.
+            (should (equal anchor "evil\"; alert(1); //"))
+            (should-not (string-match-p "</script>" script))
+            (should (string-match
+                     "var anchor = \\(\"\\(?:[^\"\\\\]\\|\\\\.\\)*\"\\);"
+                     script))
+            (let ((literal (match-string 1 script)))
+              (should (equal (json-parse-string literal) anchor)))))
+      (delete-file html-file))))
+
+(ert-deftest beacon-preview-jump-script-handles-line-separator-code-points ()
+  "Heading anchors that contain U+2028 / U+2029 (JavaScript
+LineTerminators) must be escaped so they cannot terminate the literal."
+  (dolist (ch '(?\u2028 ?\u2029))
+    (let* ((anchor (format "head-%c-end" ch))
+           (script (beacon-preview--jump-script anchor)))
+      (should (string-match
+               "var anchor = \\(\"\\(?:[^\"\\\\]\\|\\\\.\\)*\"\\);"
+               script))
+      (let ((literal (match-string 1 script)))
+        (should (equal (json-parse-string literal) anchor))))))
 
 (ert-deftest beacon-preview-postprocess-preview-html-file-preserves-style-selectors ()
   (let ((html-file (make-temp-file "beacon-preview-html-" nil ".html")))

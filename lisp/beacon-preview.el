@@ -1412,14 +1412,22 @@ per-property defcustoms has not run."
      strong-color outline-width outline-color)))
 
 (defun beacon-preview--js-string-literal (str)
-  "Return JavaScript double-quoted string literal for STR."
-  (concat "\""
-          (replace-regexp-in-string
-           "\n" "\\\\n"
-           (replace-regexp-in-string
-            "\"" "\\\\\""
-            (replace-regexp-in-string "\\\\" "\\\\\\\\" str)))
-          "\""))
+  "Return JavaScript double-quoted string literal for STR.
+
+Escapes every character that could terminate or re-interpret the literal
+in either a bare JavaScript context or when the literal is later embedded
+inside an HTML `<script>` element: backslash, double quote, CR, LF, the
+JavaScript LineTerminators U+2028 / U+2029, and `</` (neutralized to
+`<\\/` so a payload cannot close a surrounding script tag)."
+  (let ((s (or str "")))
+    (setq s (replace-regexp-in-string "\\\\" "\\\\" s t t))
+    (setq s (replace-regexp-in-string "\"" "\\\"" s t t))
+    (setq s (replace-regexp-in-string "\r" "\\r" s t t))
+    (setq s (replace-regexp-in-string "\n" "\\n" s t t))
+    (setq s (replace-regexp-in-string "\u2028" "\\u2028" s t t))
+    (setq s (replace-regexp-in-string "\u2029" "\\u2029" s t t))
+    (setq s (replace-regexp-in-string "</" "<\\/" s t t))
+    (concat "\"" s "\"")))
 
 (defun beacon-preview--render-navigation-script ()
   "Return browser-side preview helper JavaScript."
@@ -1563,32 +1571,66 @@ per-property defcustoms has not run."
       (insert "\n" (beacon-preview--render-navigation-script) "\n"))
     (buffer-string)))
 
+(defconst beacon-preview--protected-token-prefix
+  "__BEACON_PROTECTED_SCRIPT_STYLE_"
+  "Opaque marker used to shield <script>/<style> bodies from libxml.
+
+The printer in `xml-print' re-escapes `<', `>', `&', `\"', and `''
+inside any text node it serializes.  For ordinary content that is
+correct, but for <script> and <style> bodies it corrupts legitimate
+CSS selectors (`pre > code') and JavaScript operators (`a < b').
+
+Rather than unescape entities back after the fact (which would also
+decode user-authored content that happened to land in those blocks),
+we replace each body with a token *before* parsing, and substitute
+the original content back *after* serialization.  Tokens are plain
+ASCII so they survive libxml round-tripping unchanged and cannot be
+produced accidentally by Pandoc output.")
+
+(defun beacon-preview--protect-script-style-bodies (html)
+  "Replace <script>/<style> bodies in HTML with opaque placeholder tokens.
+
+Return (PROTECTED-HTML . ALIST) where ALIST maps each placeholder token
+to the original body string.  See
+`beacon-preview--protected-token-prefix' for rationale."
+  (with-temp-buffer
+    (insert html)
+    (let ((counter 0)
+          (alist nil))
+      (dolist (tag '("script" "style"))
+        (goto-char (point-min))
+        (let ((re (format "\\(<%s\\(?:[^>]*\\)>\\)\\(\\(?:.\\|\n\\)*?\\)\\(</%s\\s-*>\\)"
+                          tag tag)))
+          (while (re-search-forward re nil t)
+            (let* ((open (match-string 1))
+                   (body (match-string 2))
+                   (close (match-string 3))
+                   (token (format "%s%d__"
+                                  beacon-preview--protected-token-prefix
+                                  counter)))
+              (setq counter (1+ counter))
+              (push (cons token body) alist)
+              (replace-match (concat open token close) t t)))))
+      (cons (buffer-string) (nreverse alist)))))
+
+(defun beacon-preview--restore-script-style-bodies (html alist)
+  "Substitute placeholder tokens in HTML with their original bodies.
+
+ALIST is the mapping returned by
+`beacon-preview--protect-script-style-bodies'."
+  (let ((result html))
+    (dolist (entry alist)
+      (setq result (replace-regexp-in-string
+                    (regexp-quote (car entry))
+                    (cdr entry)
+                    result t t)))
+    result))
+
 (defun beacon-preview--serialize-html-dom (dom)
   "Return a serialized HTML string for libxml DOM root DOM."
   (with-temp-buffer
     (xml-print (list dom))
-    (let ((html (buffer-string)))
-      (dolist (tag '("style" "script"))
-        (setq html
-              (replace-regexp-in-string
-               (format "<%s\\([^>]*\\)>\\(\\(?:.\\|\n\\)*?\\)</%s>" tag tag)
-               (lambda (match)
-                 (replace-regexp-in-string
-                  "\\(?:&gt;\\|&lt;\\|&amp;\\|&quot;\\|&apos;\\)"
-                  (lambda (entity)
-                    (pcase entity
-                      ("&gt;" ">")
-                      ("&lt;" "<")
-                      ("&amp;" "&")
-                      ("&quot;" "\"")
-                      ("&apos;" "'")))
-                  match
-                  t
-                  t))
-               html
-               t
-               t)))
-      html)))
+    (buffer-string)))
 
 (defun beacon-preview--instrument-html-dom (dom prefix)
   "Instrument HTML DOM with preview beacons using PREFIX.
@@ -1633,12 +1675,19 @@ Return a plist containing `:html' and `:entries'."
 
 PREFIX defaults to `beacon'."
   (let* ((prefix (or prefix "beacon"))
-         (result
+         (protected
           (with-temp-buffer
             (insert-file-contents html-path)
+            (beacon-preview--protect-script-style-bodies (buffer-string))))
+         (protected-html (car protected))
+         (restore-alist (cdr protected))
+         (result
+          (with-temp-buffer
+            (insert protected-html)
             (let ((dom (libxml-parse-html-region (point-min) (point-max))))
               (beacon-preview--instrument-html-dom dom prefix))))
-         (html (plist-get result :html))
+         (html (beacon-preview--restore-script-style-bodies
+                (plist-get result :html) restore-alist))
          (entries (plist-get result :entries)))
     (with-temp-file html-path
       (insert html))
@@ -2586,7 +2635,7 @@ next block."
   "Return JavaScript to jump to ANCHOR, offset by RATIO of the viewport height."
   (format
    (concat "(function () {"
-           "  var anchor = %S;"
+           "  var anchor = %s;"
            "  var ratio = %s;"
            "  var retries = %d;"
            "  var retryDelay = %d;"
@@ -2609,7 +2658,7 @@ next block."
            "  }"
            "  return jump();"
            "})();")
-   anchor
+   (beacon-preview--js-string-literal anchor)
    (if ratio
        (format "%.10f" ratio)
      "0.0")
@@ -3491,9 +3540,9 @@ source buffer to that block or heading."
               "  if (!window.BeaconPreview || typeof window.BeaconPreview.flashAnchor !== 'function') {"
               "    return false;"
               "  }"
-              "  return window.BeaconPreview.flashAnchor(%S);"
+              "  return window.BeaconPreview.flashAnchor(%s);"
               "})();")
-      anchor))))
+      (beacon-preview--js-string-literal anchor)))))
 
 ;;;###autoload
 (defun beacon-preview-jump-to-index (kind index)
@@ -3510,9 +3559,9 @@ source buffer to that block or heading."
    (format
     (concat "(function () {"
             " if (!window.BeaconPreview) { return false; }"
-            " return window.BeaconPreview.jumpToIndex(%S, %d);"
+            " return window.BeaconPreview.jumpToIndex(%s, %d);"
             "})();")
-    kind
+    (beacon-preview--js-string-literal kind)
     index)))
 
 ;;;###autoload
