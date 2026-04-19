@@ -56,6 +56,10 @@
   "Debugging settings for beacon preview."
   :group 'beacon-preview)
 
+(defgroup beacon-preview-flash nil
+  "Flash highlight appearance for beacon preview."
+  :group 'beacon-preview)
+
 (defcustom beacon-preview-open-function #'xwidget-webkit-browse-url
   "Function used to open a generated preview URL in a new xwidget session."
   :type 'function
@@ -326,6 +330,357 @@ You can use a named preset such as `default', `live', `visible',
           (sexp :tag "Custom style plist"))
   :set #'beacon-preview--behavior-style-setter
   :group 'beacon-preview)
+
+(defconst beacon-preview--flash-style-keys
+  '(:enabled
+    :subtle-color :subtle-peak-color :subtle-duration-ms
+    :strong-color :strong-peak-color
+    :strong-outline-color :strong-outline-peak-color :strong-outline-width-px
+    :strong-duration-ms
+    :border-radius :easing)
+  "All keys understood by `beacon-preview-flash-style' plists.")
+
+(defconst beacon-preview--flash-style-presets
+  '((default
+     :enabled t
+     :subtle-color "rgba(255, 235, 120, 0.12)"
+     :subtle-peak-color "rgba(255, 235, 120, 0.24)"
+     :subtle-duration-ms 1050
+     :strong-color "rgba(255, 235, 120, 0.22)"
+     :strong-peak-color "rgba(255, 235, 120, 0.42)"
+     :strong-outline-color "rgba(255, 196, 0, 0.18)"
+     :strong-outline-peak-color "rgba(255, 196, 0, 0.3)"
+     :strong-outline-width-px 2
+     :strong-duration-ms 1250
+     :border-radius "0.2rem"
+     :easing "ease-out")
+    (light
+     :enabled t
+     :subtle-color "rgba(245, 158, 11, 0.10)"
+     :subtle-peak-color "rgba(245, 158, 11, 0.22)"
+     :subtle-duration-ms 1050
+     :strong-color "rgba(245, 158, 11, 0.18)"
+     :strong-peak-color "rgba(245, 158, 11, 0.34)"
+     :strong-outline-color "rgba(217, 119, 6, 0.22)"
+     :strong-outline-peak-color "rgba(217, 119, 6, 0.36)"
+     :strong-outline-width-px 2
+     :strong-duration-ms 1250
+     :border-radius "0.2rem"
+     :easing "ease-out")
+    (dark
+     :enabled t
+     :subtle-color "rgba(125, 211, 252, 0.14)"
+     :subtle-peak-color "rgba(125, 211, 252, 0.28)"
+     :subtle-duration-ms 1050
+     :strong-color "rgba(125, 211, 252, 0.24)"
+     :strong-peak-color "rgba(125, 211, 252, 0.44)"
+     :strong-outline-color "rgba(56, 189, 248, 0.28)"
+     :strong-outline-peak-color "rgba(56, 189, 248, 0.5)"
+     :strong-outline-width-px 2
+     :strong-duration-ms 1250
+     :border-radius "0.2rem"
+     :easing "ease-out")
+    (none
+     :enabled nil
+     :subtle-color "transparent"
+     :subtle-peak-color "transparent"
+     :subtle-duration-ms 0
+     :strong-color "transparent"
+     :strong-peak-color "transparent"
+     :strong-outline-color "transparent"
+     :strong-outline-peak-color "transparent"
+     :strong-outline-width-px 0
+     :strong-duration-ms 0
+     :border-radius "0"
+     :easing "linear"))
+  "Built-in flash style presets for beacon preview.")
+
+(defcustom beacon-preview-flash-style-user-presets nil
+  "Alist of user-defined flash style presets.
+
+Each entry is `(NAME . PLIST)' where NAME is a symbol and PLIST may
+contain any subset of the keys listed in
+`beacon-preview--flash-style-keys'. Missing keys fall back to the
+`default' built-in preset. User presets shadow built-ins of the same
+name."
+  :type '(alist :key-type symbol :value-type sexp)
+  :group 'beacon-preview-flash)
+
+(defvar beacon-preview--applying-flash-style nil
+  "Non-nil while a beacon preview flash style is being applied.")
+
+(defun beacon-preview--flash-style-default-spec ()
+  "Return the resolved `default' flash style preset plist."
+  (cdr (assq 'default beacon-preview--flash-style-presets)))
+
+(defun beacon-preview--flash-style-merge (overrides)
+  "Return the `default' preset overlaid with OVERRIDES plist."
+  (let ((spec (copy-sequence (beacon-preview--flash-style-default-spec))))
+    (let ((tail overrides))
+      (while tail
+        (setq spec (plist-put spec (car tail) (cadr tail)))
+        (setq tail (cddr tail))))
+    spec))
+
+(defun beacon-preview--flash-style-plist-p (value)
+  "Return non-nil when VALUE is a plist of flash style keys."
+  (and (listp value)
+       (cl-evenp (length value))
+       (let ((tail value)
+             (ok t))
+         (while (and ok tail)
+           (unless (memq (car tail) beacon-preview--flash-style-keys)
+             (setq ok nil))
+           (setq tail (cddr tail)))
+         ok)))
+
+(defun beacon-preview--flash-style-spec (style)
+  "Return normalized flash style plist for STYLE or signal an error."
+  (cond
+   ((symbolp style)
+    (let ((entry (or (assq style beacon-preview-flash-style-user-presets)
+                     (assq style beacon-preview--flash-style-presets))))
+      (unless entry
+        (user-error "Unknown beacon preview flash style: %S" style))
+      (beacon-preview--flash-style-merge (cdr entry))))
+   ((beacon-preview--flash-style-plist-p style)
+    (beacon-preview--flash-style-merge style))
+   (t
+    (user-error "Invalid beacon preview flash style: %S" style))))
+
+(defun beacon-preview--flash-style-known-names ()
+  "Return list of known flash style preset names (user + built-in)."
+  (delete-dups
+   (append (mapcar #'car beacon-preview-flash-style-user-presets)
+           (mapcar #'car beacon-preview--flash-style-presets))))
+
+(defun beacon-preview--current-flash-style-spec ()
+  "Return the current flash style as a normalized plist."
+  (list :enabled beacon-preview-flash-enabled
+        :subtle-color beacon-preview-flash-subtle-color
+        :subtle-peak-color beacon-preview-flash-subtle-peak-color
+        :subtle-duration-ms beacon-preview-flash-subtle-duration-ms
+        :strong-color beacon-preview-flash-strong-color
+        :strong-peak-color beacon-preview-flash-strong-peak-color
+        :strong-outline-color beacon-preview-flash-strong-outline-color
+        :strong-outline-peak-color beacon-preview-flash-strong-outline-peak-color
+        :strong-outline-width-px beacon-preview-flash-strong-outline-width-px
+        :strong-duration-ms beacon-preview-flash-strong-duration-ms
+        :border-radius beacon-preview-flash-border-radius
+        :easing beacon-preview-flash-easing))
+
+(defun beacon-preview--flash-style-value (style)
+  "Return canonical value (preset symbol or normalized plist) for STYLE."
+  (let ((spec (beacon-preview--flash-style-spec style)))
+    (or (car
+         (seq-find
+          (lambda (entry)
+            (equal spec (beacon-preview--flash-style-merge (cdr entry))))
+          (append beacon-preview-flash-style-user-presets
+                  beacon-preview--flash-style-presets)))
+        spec)))
+
+(defun beacon-preview--set-flash-style (style &optional local)
+  "Apply flash STYLE to the individual flash defcustoms.
+
+When LOCAL is non-nil, update only the current buffer's local values."
+  (let ((spec (beacon-preview--flash-style-spec style))
+        (beacon-preview--applying-flash-style t))
+    (dolist (pair '((:enabled . beacon-preview-flash-enabled)
+                    (:subtle-color . beacon-preview-flash-subtle-color)
+                    (:subtle-peak-color . beacon-preview-flash-subtle-peak-color)
+                    (:subtle-duration-ms . beacon-preview-flash-subtle-duration-ms)
+                    (:strong-color . beacon-preview-flash-strong-color)
+                    (:strong-peak-color . beacon-preview-flash-strong-peak-color)
+                    (:strong-outline-color . beacon-preview-flash-strong-outline-color)
+                    (:strong-outline-peak-color . beacon-preview-flash-strong-outline-peak-color)
+                    (:strong-outline-width-px . beacon-preview-flash-strong-outline-width-px)
+                    (:strong-duration-ms . beacon-preview-flash-strong-duration-ms)
+                    (:border-radius . beacon-preview-flash-border-radius)
+                    (:easing . beacon-preview-flash-easing)))
+      (beacon-preview--set-option-value
+       (cdr pair) (plist-get spec (car pair)) local))
+    (beacon-preview--set-option-value
+     'beacon-preview-flash-style
+     (beacon-preview--flash-style-value spec)
+     local)))
+
+(defun beacon-preview--flash-style-setter (symbol value)
+  "Custom setter for SYMBOL using flash style VALUE."
+  (set-default symbol (beacon-preview--flash-style-value value))
+  (unless beacon-preview--applying-flash-style
+    (beacon-preview--set-flash-style value)))
+
+(defun beacon-preview--flash-customs-fully-bound-p ()
+  "Return non-nil once every flash per-property defcustom has a binding."
+  (and (boundp 'beacon-preview-flash-enabled)
+       (boundp 'beacon-preview-flash-subtle-color)
+       (boundp 'beacon-preview-flash-subtle-peak-color)
+       (boundp 'beacon-preview-flash-subtle-duration-ms)
+       (boundp 'beacon-preview-flash-strong-color)
+       (boundp 'beacon-preview-flash-strong-peak-color)
+       (boundp 'beacon-preview-flash-strong-outline-color)
+       (boundp 'beacon-preview-flash-strong-outline-peak-color)
+       (boundp 'beacon-preview-flash-strong-outline-width-px)
+       (boundp 'beacon-preview-flash-strong-duration-ms)
+       (boundp 'beacon-preview-flash-border-radius)
+       (boundp 'beacon-preview-flash-easing)))
+
+(defun beacon-preview--sync-flash-style ()
+  "Update `beacon-preview-flash-style' to match current per-property values."
+  (when (and (not beacon-preview--applying-flash-style)
+             (beacon-preview--flash-customs-fully-bound-p))
+    (set-default
+     'beacon-preview-flash-style
+     (beacon-preview--flash-style-value
+      (beacon-preview--current-flash-style-spec)))))
+
+(defun beacon-preview--flash-property-setter (symbol value)
+  "Set SYMBOL to VALUE and resync `beacon-preview-flash-style'."
+  (set-default symbol value)
+  (beacon-preview--sync-flash-style))
+
+(defun beacon-preview--flash-style-default (key)
+  "Return the value of KEY in the `default' flash style preset."
+  (plist-get (beacon-preview--flash-style-default-spec) key))
+
+(defcustom beacon-preview-flash-enabled
+  (beacon-preview--flash-style-default :enabled)
+  "Whether preview jump/sync should flash the target element."
+  :type 'boolean
+  :set #'beacon-preview--flash-property-setter
+  :group 'beacon-preview-flash)
+
+(defcustom beacon-preview-flash-subtle-color
+  (beacon-preview--flash-style-default :subtle-color)
+  "Steady CSS background color for the subtle flash variant."
+  :type 'string
+  :set #'beacon-preview--flash-property-setter
+  :group 'beacon-preview-flash)
+
+(defcustom beacon-preview-flash-subtle-peak-color
+  (beacon-preview--flash-style-default :subtle-peak-color)
+  "Peak (0%% keyframe) CSS background color for the subtle flash variant."
+  :type 'string
+  :set #'beacon-preview--flash-property-setter
+  :group 'beacon-preview-flash)
+
+(defcustom beacon-preview-flash-subtle-duration-ms
+  (beacon-preview--flash-style-default :subtle-duration-ms)
+  "Duration in milliseconds of the subtle flash animation."
+  :type 'integer
+  :set #'beacon-preview--flash-property-setter
+  :group 'beacon-preview-flash)
+
+(defcustom beacon-preview-flash-strong-color
+  (beacon-preview--flash-style-default :strong-color)
+  "Steady CSS background color for the strong flash variant."
+  :type 'string
+  :set #'beacon-preview--flash-property-setter
+  :group 'beacon-preview-flash)
+
+(defcustom beacon-preview-flash-strong-peak-color
+  (beacon-preview--flash-style-default :strong-peak-color)
+  "Peak CSS background color for the strong flash variant."
+  :type 'string
+  :set #'beacon-preview--flash-property-setter
+  :group 'beacon-preview-flash)
+
+(defcustom beacon-preview-flash-strong-outline-color
+  (beacon-preview--flash-style-default :strong-outline-color)
+  "Steady CSS color for the strong flash inset outline."
+  :type 'string
+  :set #'beacon-preview--flash-property-setter
+  :group 'beacon-preview-flash)
+
+(defcustom beacon-preview-flash-strong-outline-peak-color
+  (beacon-preview--flash-style-default :strong-outline-peak-color)
+  "Peak CSS color for the strong flash inset outline."
+  :type 'string
+  :set #'beacon-preview--flash-property-setter
+  :group 'beacon-preview-flash)
+
+(defcustom beacon-preview-flash-strong-outline-width-px
+  (beacon-preview--flash-style-default :strong-outline-width-px)
+  "Width in pixels of the strong flash inset outline."
+  :type 'integer
+  :set #'beacon-preview--flash-property-setter
+  :group 'beacon-preview-flash)
+
+(defcustom beacon-preview-flash-strong-duration-ms
+  (beacon-preview--flash-style-default :strong-duration-ms)
+  "Duration in milliseconds of the strong flash animation."
+  :type 'integer
+  :set #'beacon-preview--flash-property-setter
+  :group 'beacon-preview-flash)
+
+(defcustom beacon-preview-flash-border-radius
+  (beacon-preview--flash-style-default :border-radius)
+  "CSS border-radius applied to flashed elements."
+  :type 'string
+  :set #'beacon-preview--flash-property-setter
+  :group 'beacon-preview-flash)
+
+(defcustom beacon-preview-flash-easing
+  (beacon-preview--flash-style-default :easing)
+  "CSS animation timing function used for both flash variants."
+  :type 'string
+  :set #'beacon-preview--flash-property-setter
+  :group 'beacon-preview-flash)
+
+;;;###autoload
+(defun beacon-preview-apply-flash-style (style &optional local)
+  "Apply beacon preview flash STYLE.
+
+STYLE may be a built-in preset (`default', `light', `dark', `none'), a
+user-registered preset from `beacon-preview-flash-style-user-presets',
+or an explicit plist accepted by `beacon-preview-flash-style'.
+
+When LOCAL is non-nil, apply STYLE only in the current buffer.
+Interactive use applies the style locally to the current buffer.
+
+Note: the flash style is baked into the injected preview script when the
+preview is built, so existing previews must be rebuilt for changes to
+take effect."
+  (interactive
+   (list
+    (intern
+     (completing-read
+      "Flash style: "
+      (mapcar #'symbol-name (beacon-preview--flash-style-known-names))
+      nil t))
+    t))
+  (beacon-preview--set-flash-style
+   style
+   (or local (called-interactively-p 'interactive)))
+  (message "[beacon-preview] flash style: %S" beacon-preview-flash-style))
+
+(defcustom beacon-preview-flash-style 'default
+  "High-level style controlling the preview flash highlight appearance.
+
+Acceptable values:
+
+- A built-in preset symbol: `default', `light', `dark', or `none'.
+- A symbol registered in `beacon-preview-flash-style-user-presets'.
+- An explicit plist with any subset of the keys in
+  `beacon-preview--flash-style-keys'; missing keys inherit from the
+  `default' preset.
+
+Setting this option keeps all `beacon-preview-flash-*' per-property
+defcustoms in sync. Conversely, editing any individual property will
+flip this option to a matching preset symbol or to a normalized plist.
+
+The flash style is baked into the injected preview script at render
+time, so previews must be rebuilt for changes to take effect."
+  :type '(choice
+          (const :tag "Default (yellow)" default)
+          (const :tag "Light (amber)" light)
+          (const :tag "Dark (cyan)" dark)
+          (const :tag "None (disabled)" none)
+          (symbol :tag "User preset name")
+          (sexp :tag "Custom style plist"))
+  :set #'beacon-preview--flash-style-setter
+  :group 'beacon-preview-flash)
 
 (defcustom beacon-preview-display-follow-delay 0.05
   "Idle delay in seconds before syncing preview after source display changes."
@@ -1005,84 +1360,135 @@ PREFIX is the anchor prefix."
         (puthash kind (append bucket (list entry)) table)))
     table))
 
+(defun beacon-preview--effective-flash-spec ()
+  "Return the effective flash style plist used for rendering.
+
+Resolves `beacon-preview-flash-style' so that plain `setq' on the
+aggregate variable takes effect even when the `:set'-driven sync to the
+per-property defcustoms has not run."
+  (beacon-preview--flash-style-spec beacon-preview-flash-style))
+
+(defun beacon-preview--flash-css ()
+  "Return CSS text for the current flash style settings."
+  (let* ((spec (beacon-preview--effective-flash-spec))
+         (radius (plist-get spec :border-radius))
+         (easing (plist-get spec :easing))
+         (subtle-color (plist-get spec :subtle-color))
+         (subtle-peak (plist-get spec :subtle-peak-color))
+         (subtle-dur (plist-get spec :subtle-duration-ms))
+         (strong-color (plist-get spec :strong-color))
+         (strong-peak (plist-get spec :strong-peak-color))
+         (strong-dur (plist-get spec :strong-duration-ms))
+         (outline-color (plist-get spec :strong-outline-color))
+         (outline-peak (plist-get spec :strong-outline-peak-color))
+         (outline-width (plist-get spec :strong-outline-width-px)))
+    (format
+     (concat
+      ".beacon-preview-flash-subtle {"
+      " animation: beacon-preview-flash-subtle %.3fs %s;"
+      " background-color: %s;"
+      " border-radius: %s;"
+      " }\n"
+      ".beacon-preview-flash-strong {"
+      " animation: beacon-preview-flash-strong %.3fs %s;"
+      " background-color: %s;"
+      " box-shadow: inset 0 0 0 %dpx %s;"
+      " border-radius: %s;"
+      " }\n"
+      "@keyframes beacon-preview-flash-subtle {"
+      " 0%% { background-color: %s; }"
+      " 50%% { background-color: %s; }"
+      " 100%% { background-color: transparent; }"
+      " }\n"
+      "@keyframes beacon-preview-flash-strong {"
+      " 0%% { background-color: %s; box-shadow: inset 0 0 0 %dpx %s; }"
+      " 50%% { background-color: %s; box-shadow: inset 0 0 0 %dpx %s; }"
+      " 100%% { background-color: transparent; box-shadow: inset 0 0 0 0 transparent; }"
+      " }")
+     (/ subtle-dur 1000.0) easing subtle-color radius
+     (/ strong-dur 1000.0) easing strong-color outline-width outline-color radius
+     subtle-peak subtle-color
+     strong-peak outline-width outline-peak
+     strong-color outline-width outline-color)))
+
+(defun beacon-preview--js-string-literal (str)
+  "Return JavaScript double-quoted string literal for STR."
+  (concat "\""
+          (replace-regexp-in-string
+           "\n" "\\\\n"
+           (replace-regexp-in-string
+            "\"" "\\\\\""
+            (replace-regexp-in-string "\\\\" "\\\\\\\\" str)))
+          "\""))
+
 (defun beacon-preview--render-navigation-script ()
   "Return browser-side preview helper JavaScript."
-  (concat
-   "<script>\n"
-   "(function () {\n"
-   "  const FLASH_STYLE_ID = \"beacon-preview-flash-style\";\n"
-   "  const FLASH_SUBTLE_CLASS = \"beacon-preview-flash-subtle\";\n"
-   "  const FLASH_STRONG_CLASS = \"beacon-preview-flash-strong\";\n"
-   "  let flashTimer = null;\n"
-   "  let flashedElement = null;\n"
-   "  function collectEntries() {\n"
-   "    const nodes = document.querySelectorAll('[data-beacon-kind][data-beacon-index]');\n"
-   "    const entries = [];\n"
-   "    for (let i = 0; i < nodes.length; i += 1) {\n"
-   "      const node = nodes[i];\n"
-   "      const kind = node.getAttribute('data-beacon-kind');\n"
-   "      const index = parseInt(node.getAttribute('data-beacon-index') || '', 10);\n"
-   "      const anchor = node.id || '';\n"
-   "      if (!kind || !anchor || !Number.isFinite(index) || index <= 0) { continue; }\n"
-   "      entries.push({ anchor: anchor, kind: kind, index: index, element: node });\n"
-   "    }\n"
-   "    return entries;\n"
-   "  }\n"
-   "  function ensureFlashStyle() {\n"
-   "    if (document.getElementById(FLASH_STYLE_ID)) { return; }\n"
-   "    const style = document.createElement('style');\n"
-   "    style.id = FLASH_STYLE_ID;\n"
-   "    style.textContent = [\n"
-   "      '.' + FLASH_SUBTLE_CLASS + ' {',\n"
-   "      '  animation: beacon-preview-flash-subtle 1.05s ease-out;',\n"
-   "      '  background-color: rgba(255, 235, 120, 0.12);',\n"
-   "      '  border-radius: 0.2rem;',\n"
-   "      '}',\n"
-   "      '.' + FLASH_STRONG_CLASS + ' {',\n"
-   "      '  animation: beacon-preview-flash-strong 1.25s ease-out;',\n"
-   "      '  background-color: rgba(255, 235, 120, 0.22);',\n"
-   "      '  box-shadow: inset 0 0 0 2px rgba(255, 196, 0, 0.18);',\n"
-   "      '  border-radius: 0.2rem;',\n"
-   "      '}',\n"
-   "      '@keyframes beacon-preview-flash-subtle {',\n"
-   "      '  0% { background-color: rgba(255, 235, 120, 0.24); }',\n"
-   "      '  38% { background-color: rgba(255, 235, 120, 0.12); }',\n"
-   "      '  58% { background-color: rgba(255, 235, 120, 0.18); }',\n"
-   "      '  100% { background-color: rgba(255, 235, 120, 0); }',\n"
-   "      '}',\n"
-   "      '@keyframes beacon-preview-flash-strong {',\n"
-   "      '  0% { background-color: rgba(255, 235, 120, 0.42); box-shadow: inset 0 0 0 2px rgba(255, 196, 0, 0.3); }',\n"
-   "      '  35% { background-color: rgba(255, 235, 120, 0.2); box-shadow: inset 0 0 0 2px rgba(255, 196, 0, 0.14); }',\n"
-   "      '  55% { background-color: rgba(255, 235, 120, 0.3); box-shadow: inset 0 0 0 2px rgba(255, 196, 0, 0.22); }',\n"
-   "      '  100% { background-color: rgba(255, 235, 120, 0); box-shadow: inset 0 0 0 0 rgba(255, 196, 0, 0); }',\n"
-   "      '}'\n"
-   "    ].join('\\n');\n"
-   "    (document.head || document.body || document.documentElement).appendChild(style);\n"
-   "  }\n"
-   "  function clearFlash() {\n"
-   "    if (flashTimer !== null) { window.clearTimeout(flashTimer); flashTimer = null; }\n"
-   "    if (flashedElement) {\n"
-   "      flashedElement.classList.remove(FLASH_SUBTLE_CLASS);\n"
-   "      flashedElement.classList.remove(FLASH_STRONG_CLASS);\n"
-   "      flashedElement = null;\n"
-   "    }\n"
-   "  }\n"
-   "  function flashElement(element, variant) {\n"
-   "    if (!element) { return false; }\n"
-   "    const flashClass = variant === 'strong' ? FLASH_STRONG_CLASS : FLASH_SUBTLE_CLASS;\n"
-   "    ensureFlashStyle();\n"
-   "    clearFlash();\n"
-   "    flashedElement = element;\n"
-   "    element.classList.add(flashClass);\n"
-   "    flashTimer = window.setTimeout(function () {\n"
-   "      if (flashedElement === element) {\n"
-   "        element.classList.remove(flashClass);\n"
-   "        flashedElement = null;\n"
-   "      }\n"
-   "      flashTimer = null;\n"
-   "    }, variant === 'strong' ? 1300 : 1100);\n"
-   "    return true;\n"
-   "  }\n"
+  (let* ((spec (beacon-preview--effective-flash-spec))
+         (enabled (plist-get spec :enabled))
+         (subtle-timeout (+ (plist-get spec :subtle-duration-ms) 50))
+         (strong-timeout (+ (plist-get spec :strong-duration-ms) 50))
+         (css-literal (if enabled
+                          (beacon-preview--js-string-literal
+                           (beacon-preview--flash-css))
+                        "\"\"")))
+    (concat
+     "<script>\n"
+     "(function () {\n"
+     "  const FLASH_STYLE_ID = \"beacon-preview-flash-style\";\n"
+     "  const FLASH_SUBTLE_CLASS = \"beacon-preview-flash-subtle\";\n"
+     "  const FLASH_STRONG_CLASS = \"beacon-preview-flash-strong\";\n"
+     (format "  const FLASH_ENABLED = %s;\n" (if enabled "true" "false"))
+     (format "  const FLASH_CSS = %s;\n" css-literal)
+     (format "  const FLASH_SUBTLE_TIMEOUT_MS = %d;\n" subtle-timeout)
+     (format "  const FLASH_STRONG_TIMEOUT_MS = %d;\n" strong-timeout)
+     "  let flashTimer = null;\n"
+     "  let flashedElement = null;\n"
+     "  function collectEntries() {\n"
+     "    const nodes = document.querySelectorAll('[data-beacon-kind][data-beacon-index]');\n"
+     "    const entries = [];\n"
+     "    for (let i = 0; i < nodes.length; i += 1) {\n"
+     "      const node = nodes[i];\n"
+     "      const kind = node.getAttribute('data-beacon-kind');\n"
+     "      const index = parseInt(node.getAttribute('data-beacon-index') || '', 10);\n"
+     "      const anchor = node.id || '';\n"
+     "      if (!kind || !anchor || !Number.isFinite(index) || index <= 0) { continue; }\n"
+     "      entries.push({ anchor: anchor, kind: kind, index: index, element: node });\n"
+     "    }\n"
+     "    return entries;\n"
+     "  }\n"
+     "  function ensureFlashStyle() {\n"
+     "    if (!FLASH_ENABLED) { return; }\n"
+     "    if (document.getElementById(FLASH_STYLE_ID)) { return; }\n"
+     "    const style = document.createElement('style');\n"
+     "    style.id = FLASH_STYLE_ID;\n"
+     "    style.textContent = FLASH_CSS;\n"
+     "    (document.head || document.body || document.documentElement).appendChild(style);\n"
+     "  }\n"
+     "  function clearFlash() {\n"
+     "    if (flashTimer !== null) { window.clearTimeout(flashTimer); flashTimer = null; }\n"
+     "    if (flashedElement) {\n"
+     "      flashedElement.classList.remove(FLASH_SUBTLE_CLASS);\n"
+     "      flashedElement.classList.remove(FLASH_STRONG_CLASS);\n"
+     "      flashedElement = null;\n"
+     "    }\n"
+     "  }\n"
+     "  function flashElement(element, variant) {\n"
+     "    if (!element) { return false; }\n"
+     "    if (!FLASH_ENABLED) { return true; }\n"
+     "    const flashClass = variant === 'strong' ? FLASH_STRONG_CLASS : FLASH_SUBTLE_CLASS;\n"
+     "    ensureFlashStyle();\n"
+     "    clearFlash();\n"
+     "    flashedElement = element;\n"
+     "    element.classList.add(flashClass);\n"
+     "    flashTimer = window.setTimeout(function () {\n"
+     "      if (flashedElement === element) {\n"
+     "        element.classList.remove(flashClass);\n"
+     "        flashedElement = null;\n"
+     "      }\n"
+     "      flashTimer = null;\n"
+     "    }, variant === 'strong' ? FLASH_STRONG_TIMEOUT_MS : FLASH_SUBTLE_TIMEOUT_MS);\n"
+     "    return true;\n"
+     "  }\n"
    "  function findByAnchor(anchor) {\n"
    "    const entries = collectEntries();\n"
    "    for (let i = 0; i < entries.length; i += 1) {\n"
@@ -1141,7 +1547,7 @@ PREFIX is the anchor prefix."
    "    isElementVisible: isElementVisible\n"
    "  };\n"
    "})();\n"
-   "</script>"))
+   "</script>")))
 
 (defun beacon-preview--inject-navigation-api (html)
   "Return HTML with the browser-side preview helper script injected."

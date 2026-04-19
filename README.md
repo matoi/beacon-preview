@@ -254,6 +254,39 @@ You can also use a custom style plist when you want one explicit bundle:
    :reveal-hidden-preview-window nil))
 ```
 
+### Customizing the flash highlight
+
+The yellow flash shown when jumping or syncing to a preview target can be
+restyled with `beacon-preview-flash-style`:
+
+```elisp
+(beacon-preview-apply-flash-style 'dark)
+```
+
+Built-in presets are `default` (yellow), `light` (amber for light backgrounds),
+`dark` (cyan for dark themes), and `none` (disables flashing).
+
+For finer control, set any of the per-property variables in the
+`beacon-preview-flash` customize group (`beacon-preview-flash-subtle-color`,
+`beacon-preview-flash-strong-duration-ms`, etc.); changing one updates
+`beacon-preview-flash-style` to a matching preset symbol or normalized plist.
+
+You can also register your own named presets:
+
+```elisp
+(setq beacon-preview-flash-style-user-presets
+      '((solarized
+         :subtle-color "rgba(181, 137, 0, 0.18)"
+         :strong-color "rgba(181, 137, 0, 0.32)"
+         :strong-outline-color "rgba(181, 137, 0, 0.4)")))
+(beacon-preview-apply-flash-style 'solarized)
+```
+
+Missing keys in a user preset (or in an inline plist value of
+`beacon-preview-flash-style`) inherit from the built-in `default` preset. The
+flash style is baked into the injected preview script at render time, so
+existing previews need to be rebuilt for changes to take effect.
+
 If you prefer manual refresh only:
 
 ```elisp
@@ -288,6 +321,7 @@ or your init file for persistent global defaults.
 | --- | --- | --- |
 | Preview opens in side window, per-preview frame, or shared frame | `beacon-preview-display-location` | — |
 | Coordinated behavior preset | `beacon-preview-behavior-style` | `M-x beacon-preview-apply-behavior-style` |
+| Coordinated flash highlight preset | `beacon-preview-flash-style` | `M-x beacon-preview-apply-flash-style` |
 | Refresh follows current source block vs preserves preview scroll | `beacon-preview-refresh-jump-behavior` | `M-x beacon-preview-toggle-refresh-jump-behavior` |
 | Live preview follows source window scrolling/recentering | `beacon-preview-follow-window-display-changes` | `M-x beacon-preview-toggle-follow-window-display-changes` |
 | Source-driven refresh may reveal a hidden preview window | `beacon-preview-reveal-hidden-preview-window` | `M-x beacon-preview-toggle-reveal-hidden-preview-window` |
