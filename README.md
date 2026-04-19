@@ -23,6 +23,41 @@ It focuses on:
 Markdown source-side block detection now assumes a working tree-sitter Markdown
 grammar. The old line-scanning fallback path is no longer used.
 
+**At the moment, using Markdown source-side sync requires fixing the
+tree-sitter Markdown library build definition and rebuilding the library
+locally before Emacs `treesit` can use it correctly.** In our current setup,
+the shipped Markdown library was not enough by itself; a local rebuild with the
+build-side issue corrected was required.
+
+One working approach on macOS is:
+
+```sh
+brew install tree-sitter-cli
+git clone https://github.com/tree-sitter-grammars/tree-sitter-markdown
+cd tree-sitter-markdown
+
+cc -fPIC -I tree-sitter-markdown/src -c \
+  tree-sitter-markdown/src/parser.c \
+  tree-sitter-markdown/src/scanner.c
+cc -dynamiclib -o libtree-sitter-markdown.dylib parser.o scanner.o
+rm -f parser.o scanner.o
+
+cc -fPIC -I tree-sitter-markdown-inline/src -c \
+  tree-sitter-markdown-inline/src/parser.c \
+  tree-sitter-markdown-inline/src/scanner.c
+cc -dynamiclib -o libtree-sitter-markdown-inline.dylib parser.o scanner.o
+
+cp libtree-sitter-markdown.dylib ~/.emacs.d/tree-sitter/
+cp libtree-sitter-markdown-inline.dylib ~/.emacs.d/tree-sitter/
+```
+
+After replacing the libraries, restart Emacs and confirm that both grammars are
+loadable. A quick sanity check is that the Markdown library should export
+`tree_sitter_markdown`, while the inline library should export
+`tree_sitter_markdown_inline`.
+
+Related upstream issue: [emacs-tree-sitter/tree-sitter-langs#1449](https://github.com/emacs-tree-sitter/tree-sitter-langs/issues/1449)
+
 ## Installation
 
 Until this package is published on MELPA, install it directly from the
