@@ -1,0 +1,352 @@
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta charset="utf-8"/>
+    <meta name="generator" content="pandoc"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes"/>
+    <title>sample</title>
+    <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    html {
+      color: #1a1a1a;
+      background-color: #fdfdfd;
+    }
+    body {
+      margin: 0 auto;
+      max-width: 36em;
+      padding-left: 50px;
+      padding-right: 50px;
+      padding-top: 50px;
+      padding-bottom: 50px;
+      hyphens: auto;
+      overflow-wrap: break-word;
+      text-rendering: optimizeLegibility;
+      font-kerning: normal;
+    }
+    @media (max-width: 600px) {
+      body {
+        font-size: 0.9em;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 1.8em;
+      }
+    }
+    @media print {
+      html {
+        background-color: white;
+      }
+      body {
+        background-color: transparent;
+        color: black;
+        font-size: 12pt;
+      }
+      p, h2, h3 {
+        orphans: 3;
+        widows: 3;
+      }
+      h2, h3, h4 {
+        page-break-after: avoid;
+      }
+    }
+    p {
+      margin: 1em 0;
+    }
+    a {
+      color: #1a1a1a;
+    }
+    a:visited {
+      color: #1a1a1a;
+    }
+    img {
+      max-width: 100%;
+    }
+    svg {
+      height: auto;
+      max-width: 100%;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.4em;
+    }
+    h5, h6 {
+      font-size: 1em;
+      font-style: italic;
+    }
+    h6 {
+      font-weight: normal;
+    }
+    ol, ul {
+      padding-left: 1.7em;
+      margin-top: 1em;
+    }
+    li > ol, li > ul {
+      margin-top: 0;
+    }
+    blockquote {
+      margin: 1em 0 1em 1.7em;
+      padding-left: 1em;
+      border-left: 2px solid #e6e6e6;
+      color: #606060;
+    }
+    code {
+      white-space: pre-wrap;
+      font-family: Menlo, Monaco, Consolas, 'Lucida Console', monospace;
+      font-size: 85%;
+      margin: 0;
+      hyphens: manual;
+    }
+    pre {
+      margin: 1em 0;
+      overflow: auto;
+    }
+    pre code {
+      padding: 0;
+      overflow: visible;
+      overflow-wrap: normal;
+    }
+    .sourceCode {
+     background-color: transparent;
+     overflow: visible;
+    }
+    hr {
+      border: none;
+      border-top: 1px solid #1a1a1a;
+      height: 1px;
+      margin: 1em 0;
+    }
+    table {
+      margin: 1em 0;
+      border-collapse: collapse;
+      width: 100%;
+      overflow-x: auto;
+      display: block;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    table caption {
+      margin-bottom: 0.75em;
+    }
+    tbody {
+      margin-top: 0.5em;
+      border-top: 1px solid #1a1a1a;
+      border-bottom: 1px solid #1a1a1a;
+    }
+    th {
+      border-top: 1px solid #1a1a1a;
+      padding: 0.25em 0.5em 0.25em 0.5em;
+    }
+    td {
+      padding: 0.125em 0.5em 0.25em 0.5em;
+    }
+    header {
+      margin-bottom: 4em;
+      text-align: center;
+    }
+    #TOC li {
+      list-style: none;
+    }
+    #TOC ul {
+      padding-left: 1.3em;
+    }
+    #TOC > ul {
+      padding-left: 0;
+    }
+    #TOC a:not(:hover) {
+      text-decoration: none;
+    }
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+  </style>
+  </head>
+  <body>
+
+    <h1 data-beacon-index="1" data-beacon-kind="h1" id="beacon-preview-prototype">Beacon Preview Prototype</h1>
+
+    <p data-beacon-index="1" data-beacon-kind="p" id="beacon-p-1">This paragraph stands in for Pandoc-rendered prose.</p>
+
+    <h2 data-beacon-index="1" data-beacon-kind="h2" id="list-section">List Section</h2>
+
+    <ul>
+      <li data-beacon-index="1" data-beacon-kind="li" id="beacon-li-1">First item</li>
+
+      <li data-beacon-index="2" data-beacon-kind="li" id="beacon-li-2">Second item</li>
+
+    </ul>
+    <h2 data-beacon-index="2" data-beacon-kind="h2" id="code-section">Code Section</h2>
+
+    <pre data-beacon-index="1" data-beacon-kind="pre" id="beacon-pre-1" class="elisp">
+      <code>(message &quot;hello&quot;)</code>
+    </pre>
+
+    <blockquote data-beacon-index="1" data-beacon-kind="blockquote" id="beacon-blockquote-1">
+
+      <p>Quoted text also becomes a jump target.</p>
+
+    </blockquote>
+
+    <table data-beacon-index="1" data-beacon-kind="table" id="beacon-table-1">
+      <thead>
+        <tr>
+          <th>Name</th>
+
+          <th>Role</th>
+
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Pandoc</td>
+
+          <td>Renderer</td>
+
+        </tr>
+      </tbody>
+    </table>
+  <script>
+(function () {
+  const FLASH_STYLE_ID = "beacon-preview-flash-style";
+  const FLASH_SUBTLE_CLASS = "beacon-preview-flash-subtle";
+  const FLASH_STRONG_CLASS = "beacon-preview-flash-strong";
+  let flashTimer = null;
+  let flashedElement = null;
+  function collectEntries() {
+    const nodes = document.querySelectorAll('[data-beacon-kind][data-beacon-index]');
+    const entries = [];
+    for (let i = 0; i < nodes.length; i += 1) {
+      const node = nodes[i];
+      const kind = node.getAttribute('data-beacon-kind');
+      const index = parseInt(node.getAttribute('data-beacon-index') || '', 10);
+      const anchor = node.id || '';
+      if (!kind || !anchor || !Number.isFinite(index) || index <= 0) { continue; }
+      entries.push({ anchor: anchor, kind: kind, index: index, element: node });
+    }
+    return entries;
+  }
+  function ensureFlashStyle() {
+    if (document.getElementById(FLASH_STYLE_ID)) { return; }
+    const style = document.createElement('style');
+    style.id = FLASH_STYLE_ID;
+    style.textContent = [
+      '.' + FLASH_SUBTLE_CLASS + ' {',
+      '  animation: beacon-preview-flash-subtle 1.05s ease-out;',
+      '  background-color: rgba(255, 235, 120, 0.12);',
+      '  border-radius: 0.2rem;',
+      '}',
+      '.' + FLASH_STRONG_CLASS + ' {',
+      '  animation: beacon-preview-flash-strong 1.25s ease-out;',
+      '  background-color: rgba(255, 235, 120, 0.22);',
+      '  box-shadow: inset 0 0 0 2px rgba(255, 196, 0, 0.18);',
+      '  border-radius: 0.2rem;',
+      '}',
+      '@keyframes beacon-preview-flash-subtle {',
+      '  0% { background-color: rgba(255, 235, 120, 0.24); }',
+      '  38% { background-color: rgba(255, 235, 120, 0.12); }',
+      '  58% { background-color: rgba(255, 235, 120, 0.18); }',
+      '  100% { background-color: rgba(255, 235, 120, 0); }',
+      '}',
+      '@keyframes beacon-preview-flash-strong {',
+      '  0% { background-color: rgba(255, 235, 120, 0.42); box-shadow: inset 0 0 0 2px rgba(255, 196, 0, 0.3); }',
+      '  35% { background-color: rgba(255, 235, 120, 0.2); box-shadow: inset 0 0 0 2px rgba(255, 196, 0, 0.14); }',
+      '  55% { background-color: rgba(255, 235, 120, 0.3); box-shadow: inset 0 0 0 2px rgba(255, 196, 0, 0.22); }',
+      '  100% { background-color: rgba(255, 235, 120, 0); box-shadow: inset 0 0 0 0 rgba(255, 196, 0, 0); }',
+      '}'
+    ].join('\n');
+    (document.head || document.body || document.documentElement).appendChild(style);
+  }
+  function clearFlash() {
+    if (flashTimer !== null) { window.clearTimeout(flashTimer); flashTimer = null; }
+    if (flashedElement) {
+      flashedElement.classList.remove(FLASH_SUBTLE_CLASS);
+      flashedElement.classList.remove(FLASH_STRONG_CLASS);
+      flashedElement = null;
+    }
+  }
+  function flashElement(element, variant) {
+    if (!element) { return false; }
+    const flashClass = variant === 'strong' ? FLASH_STRONG_CLASS : FLASH_SUBTLE_CLASS;
+    ensureFlashStyle();
+    clearFlash();
+    flashedElement = element;
+    element.classList.add(flashClass);
+    flashTimer = window.setTimeout(function () {
+      if (flashedElement === element) {
+        element.classList.remove(flashClass);
+        flashedElement = null;
+      }
+      flashTimer = null;
+    }, variant === 'strong' ? 1300 : 1100);
+    return true;
+  }
+  function findByAnchor(anchor) {
+    const entries = collectEntries();
+    for (let i = 0; i < entries.length; i += 1) {
+      if (entries[i].anchor === anchor) { return entries[i]; }
+    }
+    return null;
+  }
+  function findByIndex(kind, index) {
+    const entries = collectEntries();
+    for (let i = 0; i < entries.length; i += 1) {
+      if (entries[i].kind === kind && entries[i].index === index) { return entries[i]; }
+    }
+    return null;
+  }
+  function scrollToElement(element) {
+    if (!element) { return false; }
+    element.scrollIntoView({ behavior: 'auto', block: 'center', inline: 'nearest' });
+    return true;
+  }
+  function jumpToElement(element) {
+    if (!scrollToElement(element)) { return false; }
+    flashElement(element, 'subtle');
+    return true;
+  }
+  function jumpToAnchor(anchor) {
+    const entry = findByAnchor(anchor);
+    return jumpToElement(entry ? entry.element : document.getElementById(anchor));
+  }
+  function isElementVisible(element) {
+    if (!element) { return false; }
+    const rect = element.getBoundingClientRect();
+    return rect.bottom > 0 && rect.top < window.innerHeight;
+  }
+  function flashAnchor(anchor) {
+    const entry = findByAnchor(anchor);
+    return flashElement(entry ? entry.element : document.getElementById(anchor), 'subtle');
+  }
+  function flashAnchorIfVisible(anchor) {
+    const element = document.getElementById(anchor);
+    if (!isElementVisible(element)) { return false; }
+    return flashElement(element, 'strong');
+  }
+  function jumpToIndex(kind, index) {
+    const entry = findByIndex(kind, index);
+    return entry ? jumpToElement(entry.element) : false;
+  }
+  window.BeaconPreview = {
+    collectEntries: collectEntries,
+    findByAnchor: findByAnchor,
+    findByIndex: findByIndex,
+    jumpToAnchor: jumpToAnchor,
+    jumpToIndex: jumpToIndex,
+    flashAnchor: flashAnchor,
+    flashAnchorIfVisible: flashAnchorIfVisible,
+    flashElement: flashElement,
+    isElementVisible: isElementVisible
+  };
+})();
+</script>
+</body>
+</html>

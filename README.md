@@ -160,8 +160,8 @@ tries to roughly preserve point's vertical position inside the source window.
 
 For source-side block matching, Markdown uses cached tree-sitter entries and
 Org uses cached `org-element` entries. This keeps kind/index lookup aligned
-with the generated manifest without rescanning the buffer from the top on every
-sync step.
+with the processed preview HTML block cache without rescanning the buffer from
+the top on every sync step.
 
 If you only want to visually reacquire the current resolved target without
 scrolling the preview, use:
