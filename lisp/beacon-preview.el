@@ -15,7 +15,7 @@
 ;;
 ;; Expected workflow:
 ;;
-;; 1. Build HTML and manifest artifacts with scripts/build_preview.py
+;; 1. Build HTML artifacts with Pandoc
 ;; 2. Open that HTML in an xwidget webkit buffer
 ;; 3. Jump or flash block-level anchors from the source buffer
 ;; 4. Optionally sync back from the preview viewport to the source buffer
@@ -25,7 +25,9 @@
 (require 'subr-x)
 (require 'seq)
 (require 'cl-lib)
+(require 'dom)
 (require 'json)
+(require 'xml)
 (require 'org-element)
 (require 'url-util)
 
@@ -54,20 +56,6 @@
   "Debugging settings for beacon preview."
   :group 'beacon-preview)
 
-(defun beacon-preview--library-directory ()
-  "Return the directory containing beacon-preview.el, or nil."
-  (let ((library-file (or load-file-name
-                          (ignore-errors
-                            (find-library-name "beacon-preview")))))
-    (when library-file
-      (file-name-directory (expand-file-name library-file)))))
-
-(defun beacon-preview--default-builder-script ()
-  "Return the default path to build_preview.py."
-  (if-let ((library-dir (beacon-preview--library-directory)))
-      (expand-file-name "../scripts/build_preview.py" library-dir)
-    "build_preview.py"))
-
 (defcustom beacon-preview-open-function #'xwidget-webkit-browse-url
   "Function used to open a generated preview URL in a new xwidget session."
   :type 'function
@@ -85,20 +73,9 @@ dedicated preview frame for all source buffers."
                  (const :tag "One shared preview frame" shared-dedicated-frame))
   :group 'beacon-preview-display)
 
-(defcustom beacon-preview-python-command "python3"
-  "Python executable used to run the preview builder script."
-  :type 'string
-  :group 'beacon-preview-build)
-
 (defcustom beacon-preview-pandoc-command "pandoc"
-  "Pandoc executable used by the preview builder script."
+  "Pandoc executable used to render preview HTML."
   :type 'string
-  :group 'beacon-preview-build)
-
-(defcustom beacon-preview-builder-script
-  (beacon-preview--default-builder-script)
-  "Path to the build_preview.py script."
-  :type 'file
   :group 'beacon-preview-build)
 
 (defcustom beacon-preview-display-buffer-action
@@ -131,7 +108,7 @@ This setting is used when `beacon-preview-display-location' is
   :type 'directory
   :group 'beacon-preview-build)
 
-(defcustom beacon-preview-source-modes '(markdown-mode gfm-mode org-mode)
+(defcustom beacon-preview-source-modes '(markdown-mode gfm-mode markdown-ts-mode org-mode)
   "Major modes where source-side preview helpers should be offered."
   :type '(repeat symbol)
   :group 'beacon-preview-automation)
@@ -410,6 +387,9 @@ Set to nil to disable interception and let the xwidget follow links normally."
 (defvar beacon-preview--manifest-path nil
   "Path of the currently loaded beacon manifest.")
 
+(defvar-local beacon-preview--preview-html-cache nil
+  "Cached preview HTML entries for the current source buffer.")
+
 (defvar-local beacon-preview--xwidget-buffer nil
   "Buffer showing the beacon preview via xwidget for the current source buffer.")
 
@@ -554,9 +534,27 @@ of this setting."
                "enabled"
              "disabled")))
 
+(defun beacon-preview--markdown-source-mode-p (&optional buffer)
+  "Return non-nil when BUFFER should be treated as Markdown source."
+  (with-current-buffer (or buffer (current-buffer))
+    (derived-mode-p 'markdown-mode 'gfm-mode 'markdown-ts-mode)))
+
 (defun beacon-preview--supported-source-mode-p ()
   "Return non-nil when the current buffer is supported for source-side features."
   (apply #'derived-mode-p beacon-preview-source-modes))
+
+(defun beacon-preview--pandoc-input-format (&optional buffer)
+  "Return the Pandoc input format string for BUFFER, or signal a user error."
+  (with-current-buffer (or buffer (current-buffer))
+    (cond
+     ((derived-mode-p 'org-mode)
+      "org")
+     ((beacon-preview--markdown-source-mode-p)
+      "gfm")
+     (t
+      (user-error
+       "Current mode %s is not supported for beacon preview builds"
+       major-mode)))))
 
 (defun beacon-preview--ensure-xwidget-loaded ()
   "Load xwidget support if available, returning non-nil on success."
@@ -918,16 +916,347 @@ block, including the opening and closing fence lines."
     (list :begin (alist-get 'begin entry)
           :end (alist-get 'end entry))))
 
+(defconst beacon-preview--html-target-tags
+  '("h1" "h2" "h3" "h4" "h5" "h6" "p" "li" "blockquote" "pre" "table")
+  "HTML tags instrumented for preview beacons.")
+
+(defconst beacon-preview--html-container-tags
+  '("li" "blockquote")
+  "Preview HTML tags whose descendants should not be beaconed independently.")
+
+(defconst beacon-preview--html-suppress-nested-tags
+  '("blockquote")
+  "Preview HTML tags that suppress nested beacons of the same kind.")
+
+(defun beacon-preview--html-tag-name (node)
+  "Return NODE tag name as a lowercase string."
+  (when (listp node)
+    (downcase (symbol-name (dom-tag node)))))
+
+(defun beacon-preview--html-code-like-class-p (class-value)
+  "Return non-nil when CLASS-VALUE marks a Pandoc code wrapper."
+  (when (stringp class-value)
+    (let ((classes (split-string class-value "[ \t\r\n]+" t)))
+      (seq-some
+       (lambda (class)
+         (member class '("sourceCode" "sourceCodeContainer" "listing")))
+       classes))))
+
+(defun beacon-preview--html-instrumentable-tag-p (tag node)
+  "Return non-nil when HTML TAG on NODE should receive beacon metadata."
+  (or (member tag beacon-preview--html-target-tags)
+      (and (string= tag "div")
+           (beacon-preview--html-code-like-class-p (dom-attr node 'class)))))
+
+(defun beacon-preview--html-positive-int (value)
+  "Return VALUE as a positive integer, or nil when invalid."
+  (when (and (stringp value)
+             (string-match-p "\\`[0-9]+\\'" value))
+    (let ((parsed (string-to-number value)))
+      (and (> parsed 0) parsed))))
+
+(defun beacon-preview--html-normalize-text (text)
+  "Normalize HTML TEXT for preview cache entries."
+  (string-trim
+   (replace-regexp-in-string "[ \t\r\n]+" " " (or text ""))))
+
+(defun beacon-preview--html-entry-text (node)
+  "Return normalized text content for HTML NODE, or nil."
+  (let* ((raw-text (dom-texts node))
+         (joined-text (cond
+                       ((stringp raw-text) raw-text)
+                       ((listp raw-text) (mapconcat #'identity raw-text " "))
+                       (t "")))
+         (text (beacon-preview--html-normalize-text joined-text)))
+    (unless (string-empty-p text)
+      text)))
+
+(defun beacon-preview--html-entry (node tag generated-index prefix)
+  "Return a preview cache entry for HTML NODE.
+
+TAG is the lowercase node tag name, GENERATED-INDEX is the raw tag counter, and
+PREFIX is the anchor prefix."
+  (let* ((existing-kind (dom-attr node 'data-beacon-kind))
+         (existing-index (beacon-preview--html-positive-int
+                          (dom-attr node 'data-beacon-index)))
+         (existing-id (dom-attr node 'id))
+         (effective-kind (or existing-kind tag))
+         (effective-index (or existing-index generated-index))
+         (anchor (or existing-id
+                     (format "%s-%s-%d" prefix tag generated-index)))
+         (entry `((tag . ,tag)
+                  (kind . ,effective-kind)
+                  (index . ,effective-index)
+                  (anchor . ,anchor))))
+    (unless existing-id
+      (dom-set-attribute node 'id anchor))
+    (dom-set-attribute node 'data-beacon-kind effective-kind)
+    (dom-set-attribute node 'data-beacon-index (number-to-string effective-index))
+    (when-let ((text (beacon-preview--html-entry-text node)))
+      (setq entry (append entry `((text . ,text)))))
+    entry))
+
+(defun beacon-preview--html-cache-by-kind (entries)
+  "Return a hash table grouping preview ENTRIES by kind."
+  (let ((table (make-hash-table :test #'equal)))
+    (dolist (entry entries)
+      (let* ((kind (alist-get 'kind entry))
+             (bucket (gethash kind table nil)))
+        (puthash kind (append bucket (list entry)) table)))
+    table))
+
+(defun beacon-preview--render-navigation-script ()
+  "Return browser-side preview helper JavaScript."
+  (concat
+   "<script>\n"
+   "(function () {\n"
+   "  const FLASH_STYLE_ID = \"beacon-preview-flash-style\";\n"
+   "  const FLASH_SUBTLE_CLASS = \"beacon-preview-flash-subtle\";\n"
+   "  const FLASH_STRONG_CLASS = \"beacon-preview-flash-strong\";\n"
+   "  let flashTimer = null;\n"
+   "  let flashedElement = null;\n"
+   "  function collectEntries() {\n"
+   "    const nodes = document.querySelectorAll('[data-beacon-kind][data-beacon-index]');\n"
+   "    const entries = [];\n"
+   "    for (let i = 0; i < nodes.length; i += 1) {\n"
+   "      const node = nodes[i];\n"
+   "      const kind = node.getAttribute('data-beacon-kind');\n"
+   "      const index = parseInt(node.getAttribute('data-beacon-index') || '', 10);\n"
+   "      const anchor = node.id || '';\n"
+   "      if (!kind || !anchor || !Number.isFinite(index) || index <= 0) { continue; }\n"
+   "      entries.push({ anchor: anchor, kind: kind, index: index, element: node });\n"
+   "    }\n"
+   "    return entries;\n"
+   "  }\n"
+   "  function ensureFlashStyle() {\n"
+   "    if (document.getElementById(FLASH_STYLE_ID)) { return; }\n"
+   "    const style = document.createElement('style');\n"
+   "    style.id = FLASH_STYLE_ID;\n"
+   "    style.textContent = [\n"
+   "      '.' + FLASH_SUBTLE_CLASS + ' {',\n"
+   "      '  animation: beacon-preview-flash-subtle 1.05s ease-out;',\n"
+   "      '  background-color: rgba(255, 235, 120, 0.12);',\n"
+   "      '  border-radius: 0.2rem;',\n"
+   "      '}',\n"
+   "      '.' + FLASH_STRONG_CLASS + ' {',\n"
+   "      '  animation: beacon-preview-flash-strong 1.25s ease-out;',\n"
+   "      '  background-color: rgba(255, 235, 120, 0.22);',\n"
+   "      '  box-shadow: inset 0 0 0 2px rgba(255, 196, 0, 0.18);',\n"
+   "      '  border-radius: 0.2rem;',\n"
+   "      '}',\n"
+   "      '@keyframes beacon-preview-flash-subtle {',\n"
+   "      '  0% { background-color: rgba(255, 235, 120, 0.24); }',\n"
+   "      '  38% { background-color: rgba(255, 235, 120, 0.12); }',\n"
+   "      '  58% { background-color: rgba(255, 235, 120, 0.18); }',\n"
+   "      '  100% { background-color: rgba(255, 235, 120, 0); }',\n"
+   "      '}',\n"
+   "      '@keyframes beacon-preview-flash-strong {',\n"
+   "      '  0% { background-color: rgba(255, 235, 120, 0.42); box-shadow: inset 0 0 0 2px rgba(255, 196, 0, 0.3); }',\n"
+   "      '  35% { background-color: rgba(255, 235, 120, 0.2); box-shadow: inset 0 0 0 2px rgba(255, 196, 0, 0.14); }',\n"
+   "      '  55% { background-color: rgba(255, 235, 120, 0.3); box-shadow: inset 0 0 0 2px rgba(255, 196, 0, 0.22); }',\n"
+   "      '  100% { background-color: rgba(255, 235, 120, 0); box-shadow: inset 0 0 0 0 rgba(255, 196, 0, 0); }',\n"
+   "      '}'\n"
+   "    ].join('\\n');\n"
+   "    (document.head || document.body || document.documentElement).appendChild(style);\n"
+   "  }\n"
+   "  function clearFlash() {\n"
+   "    if (flashTimer !== null) { window.clearTimeout(flashTimer); flashTimer = null; }\n"
+   "    if (flashedElement) {\n"
+   "      flashedElement.classList.remove(FLASH_SUBTLE_CLASS);\n"
+   "      flashedElement.classList.remove(FLASH_STRONG_CLASS);\n"
+   "      flashedElement = null;\n"
+   "    }\n"
+   "  }\n"
+   "  function flashElement(element, variant) {\n"
+   "    if (!element) { return false; }\n"
+   "    const flashClass = variant === 'strong' ? FLASH_STRONG_CLASS : FLASH_SUBTLE_CLASS;\n"
+   "    ensureFlashStyle();\n"
+   "    clearFlash();\n"
+   "    flashedElement = element;\n"
+   "    element.classList.add(flashClass);\n"
+   "    flashTimer = window.setTimeout(function () {\n"
+   "      if (flashedElement === element) {\n"
+   "        element.classList.remove(flashClass);\n"
+   "        flashedElement = null;\n"
+   "      }\n"
+   "      flashTimer = null;\n"
+   "    }, variant === 'strong' ? 1300 : 1100);\n"
+   "    return true;\n"
+   "  }\n"
+   "  function findByAnchor(anchor) {\n"
+   "    const entries = collectEntries();\n"
+   "    for (let i = 0; i < entries.length; i += 1) {\n"
+   "      if (entries[i].anchor === anchor) { return entries[i]; }\n"
+   "    }\n"
+   "    return null;\n"
+   "  }\n"
+   "  function findByIndex(kind, index) {\n"
+   "    const entries = collectEntries();\n"
+   "    for (let i = 0; i < entries.length; i += 1) {\n"
+   "      if (entries[i].kind === kind && entries[i].index === index) { return entries[i]; }\n"
+   "    }\n"
+   "    return null;\n"
+   "  }\n"
+   "  function scrollToElement(element) {\n"
+   "    if (!element) { return false; }\n"
+   "    element.scrollIntoView({ behavior: 'auto', block: 'center', inline: 'nearest' });\n"
+   "    return true;\n"
+   "  }\n"
+   "  function jumpToElement(element) {\n"
+   "    if (!scrollToElement(element)) { return false; }\n"
+   "    flashElement(element, 'subtle');\n"
+   "    return true;\n"
+   "  }\n"
+   "  function jumpToAnchor(anchor) {\n"
+   "    const entry = findByAnchor(anchor);\n"
+   "    return jumpToElement(entry ? entry.element : document.getElementById(anchor));\n"
+   "  }\n"
+   "  function isElementVisible(element) {\n"
+   "    if (!element) { return false; }\n"
+   "    const rect = element.getBoundingClientRect();\n"
+   "    return rect.bottom > 0 && rect.top < window.innerHeight;\n"
+   "  }\n"
+   "  function flashAnchor(anchor) {\n"
+   "    const entry = findByAnchor(anchor);\n"
+   "    return flashElement(entry ? entry.element : document.getElementById(anchor), 'subtle');\n"
+   "  }\n"
+   "  function flashAnchorIfVisible(anchor) {\n"
+   "    const element = document.getElementById(anchor);\n"
+   "    if (!isElementVisible(element)) { return false; }\n"
+   "    return flashElement(element, 'strong');\n"
+   "  }\n"
+   "  function jumpToIndex(kind, index) {\n"
+   "    const entry = findByIndex(kind, index);\n"
+   "    return entry ? jumpToElement(entry.element) : false;\n"
+   "  }\n"
+   "  window.BeaconPreview = {\n"
+   "    collectEntries: collectEntries,\n"
+   "    findByAnchor: findByAnchor,\n"
+   "    findByIndex: findByIndex,\n"
+   "    jumpToAnchor: jumpToAnchor,\n"
+   "    jumpToIndex: jumpToIndex,\n"
+   "    flashAnchor: flashAnchor,\n"
+   "    flashAnchorIfVisible: flashAnchorIfVisible,\n"
+   "    flashElement: flashElement,\n"
+   "    isElementVisible: isElementVisible\n"
+   "  };\n"
+   "})();\n"
+   "</script>"))
+
+(defun beacon-preview--inject-navigation-api (html)
+  "Return HTML with the browser-side preview helper script injected."
+  (with-temp-buffer
+    (insert html)
+    (goto-char (point-min))
+    (if (re-search-forward "</body\\s-*>" nil t)
+        (replace-match (concat (beacon-preview--render-navigation-script)
+                               "\n</body>")
+                       t
+                       t)
+      (goto-char (point-max))
+      (insert "\n" (beacon-preview--render-navigation-script) "\n"))
+    (buffer-string)))
+
+(defun beacon-preview--serialize-html-dom (dom)
+  "Return a serialized HTML string for libxml DOM root DOM."
+  (with-temp-buffer
+    (xml-print (list dom))
+    (let ((html (buffer-string)))
+      (dolist (tag '("style" "script"))
+        (setq html
+              (replace-regexp-in-string
+               (format "<%s\\([^>]*\\)>\\(\\(?:.\\|\n\\)*?\\)</%s>" tag tag)
+               (lambda (match)
+                 (replace-regexp-in-string
+                  "\\(?:&gt;\\|&lt;\\|&amp;\\|&quot;\\|&apos;\\)"
+                  (lambda (entity)
+                    (pcase entity
+                      ("&gt;" ">")
+                      ("&lt;" "<")
+                      ("&amp;" "&")
+                      ("&quot;" "\"")
+                      ("&apos;" "'")))
+                  match
+                  t
+                  t))
+               html
+               t
+               t)))
+      html)))
+
+(defun beacon-preview--instrument-html-dom (dom prefix)
+  "Instrument HTML DOM with preview beacons using PREFIX.
+
+Return a plist containing `:html' and `:entries'."
+  (let ((counters (make-hash-table :test #'equal))
+        (entries nil))
+    (cl-labels
+        ((walk (node container-depth)
+           (when (listp node)
+             (let* ((tag (beacon-preview--html-tag-name node))
+                    (instrumentable (and tag
+                                         (beacon-preview--html-instrumentable-tag-p
+                                          tag node)))
+                    (is-container (member tag beacon-preview--html-container-tags))
+                    (suppressed nil)
+                    (child-depth container-depth))
+               (when (and instrumentable (> container-depth 0))
+                 (let ((is-nested-container is-container))
+                   (when (or (not is-nested-container)
+                             (member tag beacon-preview--html-suppress-nested-tags))
+                     (setq suppressed t)
+                     (when is-nested-container
+                       (setq child-depth (1+ child-depth))))))
+               (when (and instrumentable (not suppressed))
+                 (let* ((generated-index (1+ (gethash tag counters 0)))
+                        (entry (beacon-preview--html-entry
+                                node tag generated-index prefix)))
+                   (puthash tag generated-index counters)
+                   (setq entries (append entries (list entry)))
+                   (when is-container
+                     (setq child-depth (1+ container-depth)))))
+               (dolist (child (dom-children node))
+                 (walk child child-depth))))))
+      (walk dom 0))
+    (list :html (beacon-preview--inject-navigation-api
+                 (beacon-preview--serialize-html-dom dom))
+          :entries entries)))
+
+(defun beacon-preview--postprocess-preview-html-file (html-path &optional prefix)
+  "Rewrite HTML-PATH with preview beacons and return cache metadata.
+
+PREFIX defaults to `beacon'."
+  (let* ((prefix (or prefix "beacon"))
+         (result
+          (with-temp-buffer
+            (insert-file-contents html-path)
+            (let ((dom (libxml-parse-html-region (point-min) (point-max))))
+              (beacon-preview--instrument-html-dom dom prefix))))
+         (html (plist-get result :html))
+         (entries (plist-get result :entries)))
+    (with-temp-file html-path
+      (insert html))
+    (let ((cache (list :ordered entries
+                       :by-kind (beacon-preview--html-cache-by-kind entries)
+                       :html-path (expand-file-name html-path))))
+      (setq beacon-preview--preview-html-cache cache)
+      (setq beacon-preview--manifest-path nil)
+      (setq beacon-preview--manifest entries)
+      cache)))
+
 (defun beacon-preview--manifest-entry-at-index (kind index)
   "Return the manifest entry for KIND at 1-based INDEX, or nil."
-  (seq-find (lambda (entry)
-              (and (equal (alist-get 'kind entry) kind)
-                   (= (alist-get 'index entry) index)))
-            (beacon-preview--manifest-entries)))
+  (or (when-let* ((cache beacon-preview--preview-html-cache)
+                  (entries (gethash kind (plist-get cache :by-kind) nil)))
+        (nth (1- index) entries))
+      (seq-find (lambda (entry)
+                  (and (equal (alist-get 'kind entry) kind)
+                       (= (alist-get 'index entry) index)))
+                (beacon-preview--manifest-entries))))
 
 (defun beacon-preview--markdown-treesit-available-p ()
   "Return non-nil when tree-sitter Markdown parsing is available in this buffer."
-  (and (derived-mode-p 'markdown-mode 'gfm-mode)
+  (and (beacon-preview--markdown-source-mode-p)
        (fboundp 'treesit-parser-create)
        (fboundp 'treesit-parser-root-node)
        (fboundp 'treesit-node-type)
@@ -2159,8 +2488,7 @@ SOURCE may be a buffer or a source file path string."
   "Return plist of output artifact paths for SOURCE."
   (let* ((base (beacon-preview--source-artifact-base-name source))
          (output-dir (beacon-preview--source-temp-directory source)))
-    (list :html (expand-file-name (format "%s.html" base) output-dir)
-          :manifest (expand-file-name (format "%s.json" base) output-dir))))
+    (list :html (expand-file-name (format "%s.html" base) output-dir))))
 
 (defun beacon-preview--snapshot-extension (&optional buffer)
   "Return the temporary source snapshot extension appropriate for BUFFER."
@@ -2170,7 +2498,7 @@ SOURCE may be a buffer or a source file path string."
       (concat "." (or (file-name-extension (buffer-file-name)) "txt")))
      ((derived-mode-p 'org-mode)
       ".org")
-     ((derived-mode-p 'markdown-mode 'gfm-mode)
+     ((beacon-preview--markdown-source-mode-p)
       ".md")
      (t
       (user-error
@@ -2296,6 +2624,7 @@ it is currently hidden behind another buffer."
   "Load FILE as the active beacon manifest."
   (interactive "fBeacon manifest JSON: ")
   (setq beacon-preview--manifest-path (expand-file-name file))
+  (setq beacon-preview--preview-html-cache nil)
   (setq beacon-preview--manifest
         (condition-case err
             (json-read-file beacon-preview--manifest-path)
@@ -2310,7 +2639,8 @@ it is currently hidden behind another buffer."
   "Clear the cached beacon manifest."
   (interactive)
   (setq beacon-preview--manifest nil)
-  (setq beacon-preview--manifest-path nil))
+  (setq beacon-preview--manifest-path nil)
+  (setq beacon-preview--preview-html-cache nil))
 
 (defun beacon-preview--command-available-p (command)
   "Return non-nil when COMMAND appears runnable in the current environment."
@@ -2338,47 +2668,38 @@ it is currently hidden behind another buffer."
 
 (defun beacon-preview--validate-build-prerequisites ()
   "Signal a user error unless all build prerequisites are available."
-  (unless (beacon-preview--command-available-p beacon-preview-python-command)
-    (user-error "Python executable not found: %s" beacon-preview-python-command))
-  (unless (file-exists-p (expand-file-name beacon-preview-builder-script))
-    (user-error "Preview builder script not found: %s" beacon-preview-builder-script))
   (unless (beacon-preview--command-available-p beacon-preview-pandoc-command)
     (user-error "Pandoc executable not found: %s" beacon-preview-pandoc-command)))
 
 (defun beacon-preview--build-args ()
-  "Return the argument list for the builder process.
+  "Return the argument list for the Pandoc build process.
 
 Also validates prerequisites and prepares the build source.  The returned
-plist includes `:program', `:args', `:html', `:manifest', and
-`:default-directory'."
+plist includes `:program', `:args', `:html', and `:default-directory'."
   (beacon-preview--validate-build-prerequisites)
   (let* ((build-source (beacon-preview--prepare-build-source))
+         (input-format (beacon-preview--pandoc-input-format))
          (source-file (plist-get build-source :input-file))
          (artifacts (beacon-preview--artifact-paths))
          (html-path (plist-get artifacts :html))
-         (manifest-path (plist-get artifacts :manifest))
-         (base-name (plist-get build-source :base-name))
-         (builder-script (expand-file-name beacon-preview-builder-script))
          (output-dir (plist-get build-source :output-dir)))
-    (list :program beacon-preview-python-command
-          :args (list builder-script
-                     "--input" source-file
-                     "--output-dir" output-dir
-                     "--name" base-name
-                     "--pandoc" beacon-preview-pandoc-command)
+    (make-directory output-dir t)
+    (list :program beacon-preview-pandoc-command
+          :args (list "-f" input-format
+                      source-file
+                      "-s"
+                      "-o" html-path)
           :html html-path
-          :manifest manifest-path
           :default-directory (plist-get build-source :default-directory))))
 
 ;;;###autoload
 (defun beacon-preview-build-current-file ()
   "Build preview artifacts for the current source buffer synchronously.
 
-Returns a plist with `:html' and `:manifest' paths."
+Returns a plist with the final `:html' path."
   (interactive)
   (let* ((build (beacon-preview--build-args))
          (html-path (plist-get build :html))
-         (manifest-path (plist-get build :manifest))
          (default-directory (plist-get build :default-directory))
          (output-buffer "*beacon-preview-build*")
          (exit-code
@@ -2388,26 +2709,25 @@ Returns a plist with `:html' and `:manifest' paths."
                      nil output-buffer nil
                      (plist-get build :args))
             (file-missing
-             (user-error "Failed to start preview builder: %s"
+             (user-error "Failed to start Pandoc: %s"
                          (error-message-string err))))))
     (unless (and (integerp exit-code) (zerop exit-code))
       (pop-to-buffer output-buffer)
       (user-error "%s" (beacon-preview--build-error-message output-buffer)))
     (setq beacon-preview--last-html-path html-path)
-    (beacon-preview-load-manifest manifest-path)
+    (beacon-preview--postprocess-preview-html-file html-path)
     (when (called-interactively-p 'interactive)
       (message "Built preview: %s" html-path))
-    (list :html html-path :manifest manifest-path)))
+    (list :html html-path)))
 
 (defun beacon-preview--build-current-file-async (callback)
   "Build preview artifacts asynchronously, then call CALLBACK.
 
-CALLBACK receives one argument: a plist with `:html' and `:manifest' paths,
-or nil on failure.  Any previously running async build for this source buffer
-is killed first."
+CALLBACK receives one argument: a plist with final `:html' path, or nil on
+failure.  Any previously running async build for this source buffer is killed
+first."
   (let* ((build (beacon-preview--build-args))
          (html-path (plist-get build :html))
-         (manifest-path (plist-get build :manifest))
          (default-directory (plist-get build :default-directory))
          (source-buffer (current-buffer))
          (output-buffer (generate-new-buffer " *beacon-preview-build-async*"))
@@ -2447,15 +2767,14 @@ is killed first."
                    (when (buffer-live-p source-buffer)
                      (with-current-buffer source-buffer
                        (setq beacon-preview--last-html-path html-path)
-                       (beacon-preview-load-manifest manifest-path)
+                       (beacon-preview--postprocess-preview-html-file html-path)
                        (beacon-preview--build-message-finish start-time)))
-                   (funcall callback (list :html html-path
-                                           :manifest manifest-path))))
+                   (funcall callback (list :html html-path))))
                (when (buffer-live-p output-buffer)
                  (kill-buffer output-buffer))))))
       (file-missing
        (kill-buffer output-buffer)
-       (user-error "Failed to start preview builder: %s"
+       (user-error "Failed to start Pandoc: %s"
                    (error-message-string err))))))
 
 (defun beacon-preview--after-save ()
@@ -2640,7 +2959,7 @@ effective vertical position within the preview viewport, plus optional
 `block_progress' when the viewport is inside a long block."
   (concat
    "(function () {"
-   "  if (!window.BeaconPreview || !Array.isArray(window.BeaconPreview.manifest)) {"
+   "  if (!window.BeaconPreview || typeof window.BeaconPreview.collectEntries !== 'function') {"
    "    return '';"
    "  }"
    "  var supported = {h1:true,h2:true,h3:true,h4:true,h5:true,h6:true,p:true,li:true,blockquote:true,pre:true,table:true};"
@@ -2671,10 +2990,11 @@ effective vertical position within the preview viewport, plus optional
    "  }"
    "  var starts = [];"
    "  var spanning = [];"
-   "  for (var i = 0; i < window.BeaconPreview.manifest.length; i += 1) {"
-   "    var entry = window.BeaconPreview.manifest[i];"
+   "  var entries = window.BeaconPreview.collectEntries();"
+   "  for (var i = 0; i < entries.length; i += 1) {"
+   "    var entry = entries[i];"
    "    if (!entry || !supported[entry.kind]) { continue; }"
-   "    var element = document.getElementById(entry.anchor);"
+   "    var element = entry.element || document.getElementById(entry.anchor);"
    "    var metrics = elementMetrics(element);"
    "    if (!metrics) { continue; }"
    "    if (metrics.startVisible) {"

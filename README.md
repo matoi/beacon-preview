@@ -16,7 +16,6 @@ It focuses on:
 - Emacs with xwidgets support
 - a graphical Emacs session
 - Pandoc available in `PATH`, or configured explicitly from Emacs
-- Python 3
 - for Markdown source-side sync: Emacs `treesit` support with the `markdown` grammar available
 - for Org source-side sync: `org-element` support
 
@@ -78,7 +77,6 @@ package:
 ## Main Files
 
 - [lisp/beacon-preview.el](lisp/beacon-preview.el)
-- [scripts/build_preview.py](scripts/build_preview.py)
 - [scripts/beaconify_html.py](scripts/beaconify_html.py)
 
 ## Emacs Setup
@@ -88,6 +86,7 @@ Enable the mode for Markdown and Org buffers:
 ```elisp
 (add-hook 'markdown-mode-hook #'beacon-preview-mode)
 (add-hook 'gfm-mode-hook #'beacon-preview-mode)
+(add-hook 'markdown-ts-mode-hook #'beacon-preview-mode)
 (add-hook 'org-mode-hook #'beacon-preview-mode)
 ```
 
@@ -98,10 +97,10 @@ If you want a ready-to-paste `init.el` example, start with:
   :vc (:url "https://github.com/matoi/beacon-preview")
   :hook ((markdown-mode . beacon-preview-mode)
          (gfm-mode . beacon-preview-mode)
+         (markdown-ts-mode . beacon-preview-mode)
          (org-mode . beacon-preview-mode))
   :custom
   (beacon-preview-behavior-style 'default)
-  (beacon-preview-python-command "python3")
   (beacon-preview-display-location 'side-window))
 ```
 
@@ -112,6 +111,7 @@ A slightly more opinionated example for daily use might look like:
   :vc (:url "https://github.com/matoi/beacon-preview")
   :hook ((markdown-mode . beacon-preview-mode)
          (gfm-mode . beacon-preview-mode)
+         (markdown-ts-mode . beacon-preview-mode)
          (org-mode . beacon-preview-mode))
   :bind
   (:map beacon-preview-mode-map
@@ -122,7 +122,6 @@ A slightly more opinionated example for daily use might look like:
   (beacon-preview-behavior-style 'default)
   (beacon-preview-display-location 'side-window)
   (beacon-preview-auto-start-on-enable nil)
-  (beacon-preview-python-command "python3")
   (beacon-preview-pandoc-command "pandoc"))
 ```
 
@@ -130,12 +129,6 @@ If Emacs cannot find the right Pandoc binary through `PATH`, set it explicitly:
 
 ```elisp
 (setq beacon-preview-pandoc-command "/opt/homebrew/bin/pandoc")
-```
-
-Likewise, if you need a specific Python executable, set:
-
-```elisp
-(setq beacon-preview-python-command "/path/to/python3")
 ```
 
 Most behavior knobs are available from:

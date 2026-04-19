@@ -28,14 +28,6 @@
     (should-not (string= dir-a-1 dir-b))
     (should (string-match-p "sample-" dir-a-1))))
 
-(ert-deftest beacon-preview-default-builder-script-follows-library-directory ()
-  (cl-letf (((symbol-function 'beacon-preview--library-directory)
-             (lambda ()
-               "/tmp/beacon-preview/lisp/")))
-    (should (string=
-             (beacon-preview--default-builder-script)
-             "/tmp/beacon-preview/scripts/build_preview.py"))))
-
 (ert-deftest beacon-preview-current-heading-anchor-prefers-manifest ()
   (let ((beacon-preview--manifest
          '(((kind . "h2") (text . "Repeat") (anchor . "repeat"))
@@ -525,7 +517,7 @@
     (setq beacon-preview--xwidget-buffer nil)
     (let ((opened nil))
       (cl-letf (((symbol-function 'beacon-preview-build-current-file)
-                 (lambda () '(:html "/tmp/sample.html" :manifest "/tmp/sample.json")))
+                 (lambda () '(:html "/tmp/sample.html")))
                 ((symbol-function 'beacon-preview--open-preview)
                  (lambda (&rest _args) (setq opened t))))
         (beacon-preview-build-and-refresh)
@@ -675,6 +667,7 @@
 
 (ert-deftest beacon-preview-visible-preview-entry-script-prefers-viewport-top ()
   (let ((script (beacon-preview--visible-preview-entry-script)))
+    (should (string-match-p "collectEntries" script))
     (should (string-match-p "startVisible" script))
     (should (string-match-p "spansViewportTop" script))
     (should (string-match-p "block_progress" script))
@@ -698,6 +691,53 @@
                      0.8)))
       (goto-char position)
       (should (equal (line-number-at-pos) 4)))))
+
+(ert-deftest beacon-preview-postprocess-preview-html-file-builds-cache-and-injects-script ()
+  (let ((html-file (make-temp-file "beacon-preview-html-" nil ".html")))
+    (unwind-protect
+        (progn
+          (with-temp-file html-file
+            (insert
+             "<html><body>"
+             "<h2 id=\"existing\">Section</h2>"
+             "<ul><li><p>List item paragraph.</p></li></ul>"
+             "<blockquote><p>Quote paragraph.</p></blockquote>"
+             "<div class=\"sourceCode\"><pre><code>x</code></pre></div>"
+             "</body></html>"))
+          (with-temp-buffer
+            (let* ((cache (beacon-preview--postprocess-preview-html-file html-file))
+                   (entries (plist-get cache :ordered))
+                   (kinds (mapcar (lambda (entry) (alist-get 'kind entry)) entries))
+                   (html (with-temp-buffer
+                           (insert-file-contents html-file)
+                           (buffer-string))))
+              (should (string-match-p "window\\.BeaconPreview" html))
+              (should (string-match-p "collectEntries" html))
+              (should (string-match-p "data-beacon-kind=\"h2\"" html))
+              (should (string-match-p "data-beacon-kind=\"li\"" html))
+              (should (string-match-p "data-beacon-kind=\"blockquote\"" html))
+              (should (string-match-p "data-beacon-kind=\"div\"" html))
+              (should (string-match-p "data-beacon-kind=\"pre\"" html))
+              (should-not (member "p" kinds))
+              (should (equal (alist-get 'anchor (car entries)) "existing"))
+              (should (equal kinds '("h2" "li" "blockquote" "div" "pre"))))))
+      (delete-file html-file))))
+
+(ert-deftest beacon-preview-postprocess-preview-html-file-preserves-style-selectors ()
+  (let ((html-file (make-temp-file "beacon-preview-html-" nil ".html")))
+    (unwind-protect
+        (progn
+          (with-temp-file html-file
+            (insert
+             "<html><head><style>pre > code.sourceCode { white-space: pre; }</style></head>"
+             "<body><div class=\"sourceCode\"><pre class=\"sourceCode sh\"><code class=\"sourceCode bash\">x</code></pre></div></body></html>"))
+          (beacon-preview--postprocess-preview-html-file html-file)
+          (let ((output (with-temp-buffer
+                          (insert-file-contents html-file)
+                          (buffer-string))))
+            (should (string-match-p "pre > code\\.sourceCode" output))
+            (should-not (string-match-p "pre &gt; code\\.sourceCode" output))))
+      (delete-file html-file))))
 
 (ert-deftest beacon-preview-source-block-range-for-markdown-paragraph ()
   (with-temp-buffer
@@ -843,13 +883,14 @@
           (with-temp-file source-file
             (insert "# Title\n\n## Section\n\nBody\n"))
           (find-file source-file)
+          (setq-local major-mode 'markdown-mode)
           (let ((artifacts (beacon-preview-build-current-file)))
             (should (file-exists-p (plist-get artifacts :html)))
-            (should (file-exists-p (plist-get artifacts :manifest)))
             (should (string-prefix-p
                      (file-name-as-directory (expand-file-name beacon-preview-temporary-root))
                      (plist-get artifacts :html)))
             (should beacon-preview--manifest)
+            (should beacon-preview--preview-html-cache)
             (kill-buffer (current-buffer))))
       (ignore-errors
         (when (get-file-buffer source-file)
@@ -867,12 +908,12 @@
           (insert "# Title\n\n## Section\n\nBody\n")
           (let ((artifacts (beacon-preview-build-current-file)))
             (should (file-exists-p (plist-get artifacts :html)))
-            (should (file-exists-p (plist-get artifacts :manifest)))
             (should (string-prefix-p
                      (file-name-as-directory (expand-file-name beacon-preview-temporary-root))
                      (plist-get artifacts :html)))
             (should (string-match-p "draft-notes\\.html\\'" (plist-get artifacts :html)))
-            (should beacon-preview--manifest)))
+            (should beacon-preview--manifest)
+            (should beacon-preview--preview-html-cache)))
       (delete-directory tmp-root t))))
 
 (ert-deftest beacon-preview-build-current-file-errors-for-unvisited-unsupported-buffer ()
@@ -1169,20 +1210,66 @@
           (with-temp-file source-file
             (insert "# Title\n"))
           (find-file source-file)
+          (setq-local major-mode 'markdown-mode)
           (cl-letf (((symbol-function 'call-process)
                      (lambda (_program _infile destination _display &rest args)
                        (setq captured-args args)
                        (with-current-buffer (get-buffer-create destination)
                          (erase-buffer))
+                       (let ((html-path (plist-get (beacon-preview--artifact-paths) :html)))
+                         (make-directory (file-name-directory html-path) t)
+                         (with-temp-file html-path
+                           (insert "<html><body><h1>Title</h1></body></html>")))
                        0))
                     ((symbol-function 'beacon-preview--command-available-p)
                      (lambda (_command) t))
-                    ((symbol-function 'beacon-preview-load-manifest)
-                     (lambda (_file)
-                       (setq beacon-preview--manifest '((dummy . t))))))
+                    ((symbol-function 'beacon-preview--postprocess-preview-html-file)
+                     (lambda (_file &optional _prefix)
+                       (setq beacon-preview--manifest '((dummy . t)))
+                       (setq beacon-preview--preview-html-cache
+                             '(:ordered (((dummy . t))) :by-kind nil)))))
             (beacon-preview-build-current-file)
-            (should (member "--pandoc" captured-args))
-            (should (member "/custom/bin/pandoc" captured-args)))
+            (should (equal (car captured-args) "-f"))
+            (should (member "gfm" captured-args))
+            (should (member "-s" captured-args))
+            (should (member "-o" captured-args)))
+          (kill-buffer (current-buffer)))
+      (ignore-errors
+        (when (get-file-buffer source-file)
+          (kill-buffer (get-file-buffer source-file))))
+      (delete-directory tmp-root t))))
+
+(ert-deftest beacon-preview-build-current-file-passes-org-input-format ()
+  (let* ((tmp-root (make-temp-file "beacon-preview-ert-" t))
+         (source-file (expand-file-name "sample.org" tmp-root))
+         (beacon-preview-temporary-root (expand-file-name "preview-root" tmp-root))
+         (captured-args nil))
+    (unwind-protect
+        (progn
+          (with-temp-file source-file
+            (insert "* Title\n"))
+          (find-file source-file)
+          (setq-local major-mode 'org-mode)
+          (cl-letf (((symbol-function 'call-process)
+                     (lambda (_program _infile destination _display &rest args)
+                       (setq captured-args args)
+                       (with-current-buffer (get-buffer-create destination)
+                         (erase-buffer))
+                       (let ((html-path (plist-get (beacon-preview--artifact-paths) :html)))
+                         (make-directory (file-name-directory html-path) t)
+                         (with-temp-file html-path
+                           (insert "<html><body><h1>Title</h1></body></html>")))
+                       0))
+                    ((symbol-function 'beacon-preview--command-available-p)
+                     (lambda (_command) t))
+                    ((symbol-function 'beacon-preview--postprocess-preview-html-file)
+                     (lambda (_file &optional _prefix)
+                       (setq beacon-preview--manifest '((dummy . t)))
+                       (setq beacon-preview--preview-html-cache
+                             '(:ordered (((dummy . t))) :by-kind nil)))))
+            (beacon-preview-build-current-file)
+            (should (equal (car captured-args) "-f"))
+            (should (member "org" captured-args)))
           (kill-buffer (current-buffer)))
       (ignore-errors
         (when (get-file-buffer source-file)
@@ -1200,6 +1287,16 @@
          (beacon-preview-build-current-file)
          :type 'user-error)))))
 
+(ert-deftest beacon-preview-build-current-file-errors-for-visited-unsupported-buffer ()
+  (with-temp-buffer
+    (setq-local major-mode 'text-mode)
+    (setq-local buffer-file-name "/tmp/sample.md")
+    (cl-letf (((symbol-function 'beacon-preview--command-available-p)
+               (lambda (_command) t)))
+      (should-error
+       (beacon-preview-build-current-file)
+       :type 'user-error))))
+
 (ert-deftest beacon-preview-build-current-file-surfaces-builder-output ()
   (let* ((tmp-root (make-temp-file "beacon-preview-ert-" t))
          (source-file (expand-file-name "sample.md" tmp-root))
@@ -1209,6 +1306,7 @@
           (with-temp-file source-file
             (insert "# Title\n"))
           (find-file source-file)
+          (setq-local major-mode 'markdown-mode)
           (cl-letf (((symbol-function 'beacon-preview--command-available-p)
                      (lambda (_command) t))
                     ((symbol-function 'pop-to-buffer)
@@ -1217,7 +1315,7 @@
                      (lambda (_program _infile destination _display &rest _args)
                        (with-current-buffer (get-buffer-create destination)
                          (erase-buffer)
-                         (insert "build_preview.py: pandoc executable not found: pandoc\n"))
+                         (insert "pandoc failed with exit status 1\n"))
                        1)))
             (should-error
              (beacon-preview-build-current-file)
@@ -2639,6 +2737,13 @@
   (with-temp-buffer
     (setq-local major-mode 'org-mode)
     (should (beacon-preview--supported-source-mode-p))))
+
+(ert-deftest beacon-preview-supported-source-mode-includes-markdown-ts-mode ()
+  (with-temp-buffer
+    (setq-local major-mode 'markdown-ts-mode)
+    (should (beacon-preview--supported-source-mode-p))
+    (should (beacon-preview--markdown-source-mode-p))
+    (should (equal (beacon-preview--pandoc-input-format) "gfm"))))
 
 (ert-deftest beacon-preview-mode-does-not-auto-start-preview-by-default ()
   (with-temp-buffer

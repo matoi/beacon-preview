@@ -4,10 +4,8 @@ test: lint-python test-python test-elisp
 
 lint-python:
 	python3 -m py_compile \
-		scripts/build_preview.py \
 		scripts/beaconify_html.py \
-		tests/test_beaconify_html.py \
-		tests/test_build_preview.py
+		tests/test_beaconify_html.py
 
 test-python:
 	python3 -m unittest discover -s tests
