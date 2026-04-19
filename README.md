@@ -77,8 +77,11 @@ package:
 
 ## Main Files
 
-- [lisp/beacon-preview.el](lisp/beacon-preview.el)
-- [scripts/beaconify_html.py](scripts/beaconify_html.py)
+- [lisp/beacon-preview.el](lisp/beacon-preview.el) — the package; the entire
+  runtime (Pandoc invocation, libxml DOM instrumentation, xwidget control)
+  lives here.
+- [scripts/beaconify_html.py](scripts/beaconify_html.py) — historical Python
+  prototype, kept for reference only. Not on the runtime path.
 
 ## Emacs Setup
 

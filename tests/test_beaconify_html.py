@@ -1,3 +1,9 @@
+"""Tests for the historical Python prototype in `scripts/beaconify_html.py`.
+
+The runtime preview pipeline now lives in `lisp/beacon-preview.el`; the
+assertions below cover the legacy reference implementation only.
+"""
+
 import unittest
 
 from scripts.beaconify_html import inject_navigation_api, instrument_html

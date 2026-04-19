@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 """Inject simple beacon markers into block-level HTML elements.
 
+NOTE: This script is a historical prototype and is NOT on the runtime path.
+Since commit 6c0b998 ("Move preview builds into Emacs and add markdown-ts
+support") the preview pipeline runs entirely inside Emacs using libxml and
+dom.el (see `lisp/beacon-preview.el`).  This file is kept as a reference for
+the original design and its behavior is covered by `tests/test_beaconify_html.py`,
+but editing it has no effect on the package.
+
 This is a prototype aimed at Pandoc-generated HTML. It intentionally starts with
 block-level anchors rather than precise source-line mapping.
 """
