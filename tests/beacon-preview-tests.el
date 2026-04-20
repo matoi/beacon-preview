@@ -1187,7 +1187,7 @@ LineTerminators) must be escaped so they cannot terminate the literal."
               (with-current-buffer source-buffer
                 (should (equal (line-number-at-pos (point)) 5))
                 (should (= (mark t) original-point)))
-              (should (eq recenter-arg 0)))))
+              (should (null recenter-arg)))))
       (when (buffer-live-p source-buffer)
         (kill-buffer source-buffer))
       (when (buffer-live-p preview-buffer)
@@ -2247,6 +2247,7 @@ LineTerminators) must be escaped so they cannot terminate the literal."
 
 (ert-deftest beacon-preview-jump-to-anchor-uses-source-window-for-ratio ()
   (with-temp-buffer
+    (setq-local beacon-preview--last-build-tick (buffer-chars-modified-tick))
     (let ((captured-window nil)
           (executed nil))
       (cl-letf (((symbol-function 'beacon-preview--source-window)
@@ -2270,7 +2271,8 @@ LineTerminators) must be escaped so they cannot terminate the literal."
 (ert-deftest beacon-preview-sync-source-to-preview-moves-to-visible-markdown-block ()
   (let ((source-buffer (generate-new-buffer " *beacon-preview-source*"))
         (preview-buffer (generate-new-buffer " *beacon-preview-dwim*"))
-        (original-point nil))
+        (original-point nil)
+        (displayed nil))
     (unwind-protect
         (progn
           (with-current-buffer source-buffer
@@ -2280,6 +2282,7 @@ LineTerminators) must be escaped so they cannot terminate the literal."
              "Second paragraph.\n")
             (setq-local major-mode 'markdown-mode)
             (setq-local beacon-preview--xwidget-buffer preview-buffer)
+            (setq-local beacon-preview--last-build-tick (buffer-chars-modified-tick))
             (setq original-point (point)))
           (with-current-buffer preview-buffer
             (setq-local major-mode 'xwidget-webkit-mode)
@@ -2292,9 +2295,9 @@ LineTerminators) must be escaped so they cannot terminate the literal."
                       ((symbol-function 'xwidget-webkit-execute-script)
                        (lambda (_session _script callback)
                          (funcall callback "{\"anchor\":\"beacon-p-2\",\"kind\":\"p\",\"index\":2,\"ratio\":0.1,\"block_progress\":0}")))
-                      ((symbol-function 'display-buffer)
-                       (lambda (buffer &optional _action)
-                         (set-window-buffer (selected-window) buffer)
+                      ((symbol-function 'beacon-preview--show-preview-buffer)
+                       (lambda (buffer)
+                         (setq displayed buffer)
                          (selected-window)))
                       ((symbol-function 'recenter)
                        (lambda (&optional arg)
@@ -2305,8 +2308,9 @@ LineTerminators) must be escaped so they cannot terminate the literal."
                 (should (= (mark t) original-point))
                 (pop-to-mark-command)
                 (should (= (point) original-point)))
+              (should (eq displayed preview-buffer))
               (should (eq (window-buffer (selected-window)) source-buffer))
-              (should (eq recenter-arg 0)))))
+              (should (null recenter-arg)))))
       (when (buffer-live-p source-buffer)
         (kill-buffer source-buffer))
       (when (buffer-live-p preview-buffer)
@@ -2368,6 +2372,87 @@ LineTerminators) must be escaped so they cannot terminate the literal."
                (lambda () (user-error "No heading"))))
       (should-error (beacon-preview-jump-to-current-block)
                     :type 'user-error))))
+
+(ert-deftest beacon-preview-jump-to-current-heading-resolves-anchor-after-stale-refresh ()
+  (with-temp-buffer
+    (setq-local major-mode 'markdown-mode)
+    (insert "# Heading\n")
+    (setq-local beacon-preview--last-build-tick -1)
+    (let ((refreshed nil)
+          (build-called 0)
+          (jumped-anchor nil))
+      (cl-letf (((symbol-function 'beacon-preview--build-current-file-async)
+                 (lambda (callback)
+                   (cl-incf build-called)
+                   (funcall callback '(:html "/tmp/fake.html"))))
+                ((symbol-function 'beacon-preview--refresh-with-artifacts)
+                 (lambda (&rest _args)
+                   (setq refreshed t)
+                   (setq beacon-preview--last-build-tick
+                         (buffer-chars-modified-tick))))
+                ((symbol-function 'beacon-preview--build-message-start)
+                 (lambda () nil))
+                ((symbol-function 'beacon-preview--live-preview-p)
+                 (lambda () nil))
+                ((symbol-function 'beacon-preview--edited-anchors)
+                 (lambda () nil))
+                ((symbol-function 'run-at-time)
+                 (lambda (_delay _repeat fn &rest _args)
+                   (funcall fn)))
+                ((symbol-function 'beacon-preview-current-heading-anchor)
+                 (lambda ()
+                   (unless refreshed
+                     (ert-fail "Heading anchor should be resolved after refresh"))
+                   "fresh-heading"))
+                ((symbol-function 'beacon-preview-jump-to-anchor)
+                 (lambda (anchor)
+                   (setq jumped-anchor anchor))))
+        (beacon-preview-jump-to-current-heading)
+        (should (= build-called 1))
+        (should (string= jumped-anchor "fresh-heading"))))))
+
+(ert-deftest beacon-preview-jump-to-current-block-resolves-anchor-after-stale-refresh ()
+  (with-temp-buffer
+    (setq-local major-mode 'markdown-mode)
+    (insert "# Heading\n\nParagraph.\n")
+    (setq-local beacon-preview--last-build-tick -1)
+    (let ((refreshed nil)
+          (build-called 0)
+          (jumped-anchor nil))
+      (cl-letf (((symbol-function 'beacon-preview--build-current-file-async)
+                 (lambda (callback)
+                   (cl-incf build-called)
+                   (funcall callback '(:html "/tmp/fake.html"))))
+                ((symbol-function 'beacon-preview--refresh-with-artifacts)
+                 (lambda (&rest _args)
+                   (setq refreshed t)
+                   (setq beacon-preview--last-build-tick
+                         (buffer-chars-modified-tick))))
+                ((symbol-function 'beacon-preview--build-message-start)
+                 (lambda () nil))
+                ((symbol-function 'beacon-preview--live-preview-p)
+                 (lambda () nil))
+                ((symbol-function 'beacon-preview--edited-anchors)
+                 (lambda () nil))
+                ((symbol-function 'run-at-time)
+                 (lambda (_delay _repeat fn &rest _args)
+                   (funcall fn)))
+                ((symbol-function 'beacon-preview-current-block-anchor)
+                 (lambda ()
+                   (unless refreshed
+                     (ert-fail "Block anchor should be resolved after refresh"))
+                   nil))
+                ((symbol-function 'beacon-preview-current-heading-anchor)
+                 (lambda ()
+                   (unless refreshed
+                     (ert-fail "Heading fallback should be resolved after refresh"))
+                   "fresh-heading"))
+                ((symbol-function 'beacon-preview-jump-to-anchor)
+                 (lambda (anchor)
+                   (setq jumped-anchor anchor))))
+        (beacon-preview-jump-to-current-block)
+        (should (= build-called 1))
+        (should (string= jumped-anchor "fresh-heading"))))))
 
 (ert-deftest beacon-preview-current-session-uses-tracked-preview-buffer ()
   (with-temp-buffer
@@ -2910,16 +2995,64 @@ LineTerminators) must be escaped so they cannot terminate the literal."
 
 (ert-deftest beacon-preview-switch-to-preview-displays-tracked-buffer ()
   (with-temp-buffer
-    (let ((preview-buffer (generate-new-buffer " *beacon-preview-switch*"))
+    (let ((source-buffer (current-buffer))
+          (preview-buffer (generate-new-buffer " *beacon-preview-switch*"))
           (displayed nil))
       (unwind-protect
           (progn
             (setq beacon-preview--xwidget-buffer preview-buffer)
-            (cl-letf (((symbol-function 'display-buffer)
+            (setq beacon-preview--last-build-tick
+                  (buffer-chars-modified-tick))
+            (with-current-buffer preview-buffer
+              (setq beacon-preview--source-buffer source-buffer))
+            (cl-letf (((symbol-function 'beacon-preview--live-preview-p)
+                       (lambda () t))
+                      ((symbol-function 'display-buffer)
                        (lambda (buffer &optional _action)
                          (setq displayed buffer)
                          (selected-window))))
               (beacon-preview-switch-to-preview)
+              (should (eq displayed preview-buffer))))
+        (kill-buffer preview-buffer)))))
+
+(ert-deftest beacon-preview-switch-to-preview-rebuilds-when-preview-is-stale ()
+  (with-temp-buffer
+    (let ((source-buffer (current-buffer))
+          (preview-buffer (generate-new-buffer " *beacon-preview-switch*"))
+          (displayed nil)
+          (build-called 0)
+          (refresh-behavior nil))
+      (unwind-protect
+          (progn
+            (setq beacon-preview--xwidget-buffer preview-buffer)
+            (setq beacon-preview--last-build-tick
+                  (1- (buffer-chars-modified-tick)))
+            (with-current-buffer preview-buffer
+              (setq beacon-preview--source-buffer source-buffer))
+            (cl-letf (((symbol-function 'beacon-preview--live-preview-p)
+                       (lambda () t))
+                      ((symbol-function 'beacon-preview--build-current-file-async)
+                       (lambda (callback)
+                         (cl-incf build-called)
+                         (funcall callback '(:html "/tmp/fake.html"))))
+                      ((symbol-function 'beacon-preview--refresh-with-artifacts)
+                       (lambda (_artifacts _source-buffer _live _edited-anchors
+                                &optional refresh-jump-behavior)
+                         (setq refresh-behavior refresh-jump-behavior)))
+                      ((symbol-function 'beacon-preview--build-message-start)
+                       (lambda () nil))
+                      ((symbol-function 'beacon-preview--edited-anchors)
+                       (lambda () nil))
+                      ((symbol-function 'run-at-time)
+                       (lambda (_delay _repeat fn &rest _args)
+                         (funcall fn)))
+                      ((symbol-function 'display-buffer)
+                       (lambda (buffer &optional _action)
+                         (setq displayed buffer)
+                         (selected-window))))
+              (beacon-preview-switch-to-preview)
+              (should (= build-called 1))
+              (should (eq refresh-behavior 'preserve))
               (should (eq displayed preview-buffer))))
         (kill-buffer preview-buffer)))))
 
@@ -2934,19 +3067,54 @@ LineTerminators) must be escaped so they cannot terminate the literal."
 
 (ert-deftest beacon-preview-toggle-preview-display-shows-hidden-preview ()
   (with-temp-buffer
-    (let ((preview-buffer (generate-new-buffer " *beacon-preview-switch*"))
+    (let ((source-buffer (current-buffer))
+          (preview-buffer (generate-new-buffer " *beacon-preview-switch*"))
           (displayed nil))
       (unwind-protect
           (progn
             (setq beacon-preview--xwidget-buffer preview-buffer)
+            (setq beacon-preview--last-build-tick
+                  (buffer-chars-modified-tick))
+            (with-current-buffer preview-buffer
+              (setq beacon-preview--source-buffer source-buffer))
             (cl-letf (((symbol-function 'get-buffer-window)
                        (lambda (&rest _args) nil))
+                      ((symbol-function 'beacon-preview--live-preview-p)
+                       (lambda () t))
                       ((symbol-function 'display-buffer)
                        (lambda (buffer &optional _action)
                          (setq displayed buffer)
                          (selected-window))))
               (beacon-preview-toggle-preview-display)
               (should (eq displayed preview-buffer))))
+        (kill-buffer preview-buffer)))))
+
+(ert-deftest beacon-preview-toggle-preview-display-rebuilds-hidden-stale-preview ()
+  (with-temp-buffer
+    (let ((source-buffer (current-buffer))
+          (preview-buffer (generate-new-buffer " *beacon-preview-switch*"))
+          (displayed nil)
+          (built nil))
+      (unwind-protect
+          (progn
+            (setq beacon-preview--xwidget-buffer preview-buffer)
+            (setq beacon-preview--last-build-tick
+                  (1- (buffer-chars-modified-tick)))
+            (with-current-buffer preview-buffer
+              (setq beacon-preview--source-buffer source-buffer))
+            (cl-letf (((symbol-function 'get-buffer-window)
+                       (lambda (&rest _args) nil))
+                      ((symbol-function 'beacon-preview-build-and-open)
+                       (lambda () (setq built t)))
+                      ((symbol-function 'beacon-preview--live-preview-p)
+                       (lambda () t))
+                      ((symbol-function 'display-buffer)
+                       (lambda (buffer &optional _action)
+                         (setq displayed buffer)
+                         (selected-window))))
+              (beacon-preview-toggle-preview-display)
+              (should built)
+              (should-not displayed)))
         (kill-buffer preview-buffer)))))
 
 (ert-deftest beacon-preview-toggle-preview-display-starts-preview-when-needed ()
@@ -3022,12 +3190,22 @@ LineTerminators) must be escaped so they cannot terminate the literal."
           (with-current-buffer source-a
             (setq-local major-mode 'markdown-mode)
             (setq-local buffer-file-name "/tmp/a.md")
-            (setq-local beacon-preview--xwidget-buffer preview-a))
+            (setq-local beacon-preview--xwidget-buffer preview-a)
+            (setq-local beacon-preview--last-build-tick
+                        (buffer-chars-modified-tick)))
           (with-current-buffer source-b
             (setq-local major-mode 'markdown-mode)
             (setq-local buffer-file-name "/tmp/b.md")
-            (setq-local beacon-preview--xwidget-buffer preview-b))
-          (cl-letf (((symbol-function 'display-buffer)
+            (setq-local beacon-preview--xwidget-buffer preview-b)
+            (setq-local beacon-preview--last-build-tick
+                        (buffer-chars-modified-tick)))
+          (with-current-buffer preview-a
+            (setq-local beacon-preview--source-buffer source-a))
+          (with-current-buffer preview-b
+            (setq-local beacon-preview--source-buffer source-b))
+          (cl-letf (((symbol-function 'beacon-preview--live-preview-p)
+                     (lambda () t))
+                    ((symbol-function 'display-buffer)
                      (lambda (buffer &optional _action)
                        (setq displayed buffer)
                        (selected-window))))
@@ -3547,6 +3725,7 @@ LineTerminators) must be escaped so they cannot terminate the literal."
 (ert-deftest beacon-preview-flash-current-target-runs-preview-flash-api ()
   (with-temp-buffer
     (setq-local major-mode 'markdown-mode)
+    (setq-local beacon-preview--last-build-tick (buffer-chars-modified-tick))
     (let ((beacon-preview--xwidget-buffer (generate-new-buffer " *beacon-preview-live*"))
           (executed nil))
       (unwind-protect
@@ -3568,6 +3747,173 @@ LineTerminators) must be escaped so they cannot terminate the literal."
     (should beacon-preview-debug)
     (beacon-preview-toggle-debug)
     (should-not beacon-preview-debug)))
+
+(defmacro beacon-preview-test--with-temp-md-file (bindings &rest body)
+  "Bind BINDINGS = ((FILE CONTENT)) to a temp .md file and run BODY."
+  (declare (indent 1))
+  (let ((file-sym (caar bindings))
+        (content (cadar bindings)))
+    `(let ((,file-sym (make-temp-file "beacon-preview-src-" nil ".md" ,content)))
+       (unwind-protect
+           (progn ,@body)
+         (when (file-exists-p ,file-sym)
+           (delete-file ,file-sym))))))
+
+(ert-deftest beacon-preview-prepare-build-source-unmodified-uses-file-path ()
+  (beacon-preview-test--with-temp-md-file ((file "# hi\n"))
+    (let ((buf (find-file-noselect file)))
+      (unwind-protect
+          (with-current-buffer buf
+            (setq-local major-mode 'markdown-mode)
+            (let ((result (beacon-preview--prepare-build-source)))
+              (should (string= (plist-get result :input-file)
+                               (expand-file-name file)))
+              (should-not (plist-get result :ephemeral))
+              (should-not (buffer-modified-p))))
+        (kill-buffer buf)))))
+
+(ert-deftest beacon-preview-prepare-build-source-modified-writable-saves ()
+  (beacon-preview-test--with-temp-md-file ((file "# initial\n"))
+    (let ((buf (find-file-noselect file)))
+      (unwind-protect
+          (with-current-buffer buf
+            (setq-local major-mode 'markdown-mode)
+            (goto-char (point-max))
+            (insert "edited\n")
+            (should (buffer-modified-p))
+            (let ((result (beacon-preview--prepare-build-source)))
+              (should (string= (plist-get result :input-file)
+                               (expand-file-name file)))
+              (should-not (plist-get result :ephemeral))
+              (should-not (buffer-modified-p))
+              (with-temp-buffer
+                (insert-file-contents file)
+                (should (string-match-p "edited" (buffer-string))))))
+        (kill-buffer buf)))))
+
+(ert-deftest beacon-preview-prepare-build-source-modified-readonly-snapshots ()
+  (beacon-preview-test--with-temp-md-file ((file "# initial\n"))
+    (let ((buf (find-file-noselect file))
+          (orig-mode (file-modes file)))
+      (unwind-protect
+          (with-current-buffer buf
+            (setq-local major-mode 'markdown-mode)
+            (goto-char (point-max))
+            (insert "unsaved edit\n")
+            (set-file-modes file #o444)
+            (should (buffer-modified-p))
+            (let ((result (beacon-preview--prepare-build-source)))
+              (should (plist-get result :ephemeral))
+              (should-not (string= (plist-get result :input-file)
+                                   (expand-file-name file)))
+              (should (buffer-modified-p))
+              (with-temp-buffer
+                (insert-file-contents (plist-get result :input-file))
+                (should (string-match-p "unsaved edit" (buffer-string))))))
+        (set-file-modes file orig-mode)
+        (with-current-buffer buf (set-buffer-modified-p nil))
+        (kill-buffer buf)))))
+
+(ert-deftest beacon-preview-prepare-build-source-external-change-signals-error ()
+  (beacon-preview-test--with-temp-md-file ((file "# initial\n"))
+    (let ((buf (find-file-noselect file)))
+      (unwind-protect
+          (with-current-buffer buf
+            (setq-local major-mode 'markdown-mode)
+            (goto-char (point-max))
+            (insert "buffer edit\n")
+            (should (buffer-modified-p))
+            ;; Simulate external modification by rewriting the file out-of-band
+            ;; and pushing the visited-file modtime backward so the current file
+            ;; appears newer than what Emacs last saw.
+            (let ((coding-system-for-write 'utf-8-unix))
+              (write-region "# external\n" nil file nil 'silent))
+            (set-visited-file-modtime '(0 0))
+            (should-error (beacon-preview--prepare-build-source)
+                          :type 'user-error)
+            (should (buffer-modified-p))
+            (with-temp-buffer
+              (insert-file-contents file)
+              (should-not (string-match-p "buffer edit" (buffer-string)))))
+        (with-current-buffer buf (set-buffer-modified-p nil))
+        (kill-buffer buf)))))
+
+(ert-deftest beacon-preview-sync-source-to-preview-rebuilds-stale-preview-first ()
+  (let ((source-buffer (generate-new-buffer " *beacon-preview-source-stale*"))
+        (preview-buffer (generate-new-buffer " *beacon-preview-stale*"))
+        (build-called 0)
+        (sync-called 0)
+        (refresh-behavior nil))
+    (unwind-protect
+        (progn
+          (with-current-buffer source-buffer
+            (insert "# Heading\n\nParagraph.\n")
+            (setq-local major-mode 'markdown-mode)
+            (setq-local beacon-preview--xwidget-buffer preview-buffer)
+            ;; Different tick than current → preview is stale.
+            (setq-local beacon-preview--last-build-tick -1))
+          (with-current-buffer preview-buffer
+            (setq-local major-mode 'xwidget-webkit-mode)
+            (setq-local beacon-preview--source-buffer source-buffer))
+          (cl-letf (((symbol-function 'beacon-preview--build-current-file-async)
+                     (lambda (callback)
+                       (cl-incf build-called)
+                       (funcall callback '(:html "/tmp/fake.html"))))
+                    ((symbol-function 'beacon-preview--refresh-with-artifacts)
+                     (lambda (_artifacts _source-buffer _live _edited-anchors
+                              &optional refresh-jump-behavior)
+                       (setq refresh-behavior refresh-jump-behavior)))
+                    ((symbol-function 'beacon-preview--build-message-start)
+                     (lambda () nil))
+                    ((symbol-function 'beacon-preview--live-preview-p)
+                     (lambda () nil))
+                    ((symbol-function 'beacon-preview--edited-anchors)
+                     (lambda () nil))
+                    ((symbol-function 'beacon-preview--sync-source-to-preview-now)
+                     (lambda (_src _prev) (cl-incf sync-called)))
+                    ((symbol-function 'run-at-time)
+                     (lambda (_delay _repeat fn &rest _args) (funcall fn))))
+            (with-current-buffer source-buffer
+              (beacon-preview-sync-source-to-preview))
+            (should (= build-called 1))
+            (should (eq refresh-behavior 'preserve))
+            (should (= sync-called 1))))
+      (when (buffer-live-p source-buffer) (kill-buffer source-buffer))
+      (when (buffer-live-p preview-buffer) (kill-buffer preview-buffer)))))
+
+(ert-deftest beacon-preview-sync-source-to-preview-skips-rebuild-when-fresh ()
+  (let ((source-buffer (generate-new-buffer " *beacon-preview-source-fresh*"))
+        (preview-buffer (generate-new-buffer " *beacon-preview-fresh*"))
+        (build-called 0)
+        (sync-called 0))
+    (unwind-protect
+        (progn
+          (with-current-buffer source-buffer
+            (insert "# Heading\n")
+            (setq-local major-mode 'markdown-mode)
+            (setq-local beacon-preview--xwidget-buffer preview-buffer)
+            (setq-local beacon-preview--last-build-tick (buffer-chars-modified-tick)))
+          (with-current-buffer preview-buffer
+            (setq-local major-mode 'xwidget-webkit-mode)
+            (setq-local beacon-preview--source-buffer source-buffer))
+          (cl-letf (((symbol-function 'beacon-preview--build-current-file-async)
+                     (lambda (_cb) (cl-incf build-called)))
+                    ((symbol-function 'beacon-preview--sync-source-to-preview-now)
+                     (lambda (_src _prev) (cl-incf sync-called))))
+            (with-current-buffer source-buffer
+              (beacon-preview-sync-source-to-preview))
+            (should (= build-called 0))
+            (should (= sync-called 1))))
+      (when (buffer-live-p source-buffer) (kill-buffer source-buffer))
+      (when (buffer-live-p preview-buffer) (kill-buffer preview-buffer)))))
+
+(ert-deftest beacon-preview-prepare-build-source-no-file-snapshots ()
+  (with-temp-buffer
+    (setq-local major-mode 'markdown-mode)
+    (insert "# scratch\n")
+    (let ((result (beacon-preview--prepare-build-source)))
+      (should (plist-get result :ephemeral))
+      (should (file-exists-p (plist-get result :input-file))))))
 
 (provide 'beacon-preview-tests)
 

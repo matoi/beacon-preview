@@ -1370,10 +1370,10 @@ new preview buffer. The xwidget callback must already be installed for SESSION."
     (with-selected-window window
       (recenter target-line))))
 
-(defun beacon-preview--align-window-to-top (window)
-  "Show point near the top of WINDOW."
+(defun beacon-preview--align-window-to-center (window)
+  "Show point near the vertical center of WINDOW."
   (with-selected-window window
-    (recenter 0)))
+    (recenter)))
 
 (defun beacon-preview--window-line-ratio (&optional window position)
   "Return POSITION's approximate vertical ratio within WINDOW.
@@ -2851,7 +2851,7 @@ near the top of the window."
         (goto-char target)
         (set-window-point window target)
         (ignore ratio)
-        (beacon-preview--align-window-to-top window)
+        (beacon-preview--align-window-to-center window)
         target))))
 
 (defun beacon-preview--nearest-block-source-position-at-pos (pos)
@@ -3280,8 +3280,41 @@ SOURCE may be a buffer or a source file path string."
        "Current buffer is not visiting a file and mode %s is not supported for preview snapshots"
        major-mode)))))
 
+(defun beacon-preview--file-writable-for-save-p (file)
+  "Return non-nil when FILE can be written for an auto-save-before-preview.
+A missing FILE is considered writable when its parent directory is writable."
+  (if (file-exists-p file)
+      (file-writable-p file)
+    (file-writable-p (file-name-directory (expand-file-name file)))))
+
+(defun beacon-preview--write-buffer-snapshot (buffer output-dir base-name default-dir)
+  "Write BUFFER contents to a temp snapshot under OUTPUT-DIR and return metadata.
+BASE-NAME is used to name the snapshot file.  DEFAULT-DIR becomes the
+`:default-directory' of the returned plist."
+  (let ((snapshot-file
+         (expand-file-name
+          (format "%s-source%s"
+                  base-name
+                  (beacon-preview--snapshot-extension buffer))
+          output-dir)))
+    (with-current-buffer buffer
+      (let ((coding-system-for-write 'utf-8-unix))
+        (write-region (point-min) (point-max) snapshot-file nil 'silent)))
+    (list :input-file snapshot-file
+          :output-dir output-dir
+          :base-name base-name
+          :default-directory default-dir
+          :ephemeral t)))
+
 (defun beacon-preview--prepare-build-source (&optional buffer)
   "Return build metadata for BUFFER's current preview source.
+
+When BUFFER visits a file and has unsaved modifications, the buffer is
+silently saved so the preview always reflects the live edits.  If the
+on-disk file has been modified externally since Emacs last read or wrote
+it, `user-error' is signaled to avoid clobbering the external changes.
+When the file is read-only, the buffer contents are rendered via a
+temporary snapshot instead.
 
 The returned plist includes:
 
@@ -3297,26 +3330,27 @@ The returned plist includes:
          (default-dir (or (and source-file (file-name-directory source-file))
                           default-directory)))
     (make-directory output-dir t)
-    (if source-file
+    (cond
+     ((not source-file)
+      (beacon-preview--write-buffer-snapshot buffer output-dir base-name default-dir))
+     (t
+      (with-current-buffer buffer
+        (when (buffer-modified-p)
+          (unless (verify-visited-file-modtime (current-buffer))
+            (user-error
+             "beacon-preview: %s has changed on disk; resolve the conflict (revert or save) before previewing"
+             source-file))
+          (when (beacon-preview--file-writable-for-save-p source-file)
+            (let ((inhibit-message t))
+              (save-buffer)))))
+      (if (with-current-buffer buffer (buffer-modified-p))
+          ;; Save was skipped (file is read-only); fall back to snapshot.
+          (beacon-preview--write-buffer-snapshot buffer output-dir base-name default-dir)
         (list :input-file (expand-file-name source-file)
               :output-dir output-dir
               :base-name base-name
               :default-directory default-dir
-              :ephemeral nil)
-      (let ((snapshot-file
-             (expand-file-name
-              (format "%s-source%s"
-                      base-name
-                      (beacon-preview--snapshot-extension buffer))
-              output-dir)))
-        (with-current-buffer buffer
-          (let ((coding-system-for-write 'utf-8-unix))
-            (write-region (point-min) (point-max) snapshot-file nil 'silent)))
-        (list :input-file snapshot-file
-              :output-dir output-dir
-              :base-name base-name
-              :default-directory default-dir
-              :ephemeral t)))))
+              :ephemeral nil))))))
 
 (defun beacon-preview--open-preview (file &optional anchor explicit)
   "Open FILE as a beacon preview in xwidget, optionally targeting ANCHOR.
@@ -3636,22 +3670,27 @@ have a live preview session."
              (beacon-preview--open-preview html-path anchor t))))))))
 
 (defun beacon-preview--refresh-with-artifacts (artifacts source-buffer
-                                                         live edited-anchors)
+                                                         live edited-anchors
+                                                         &optional refresh-jump-behavior)
   "Refresh the preview in SOURCE-BUFFER using ARTIFACTS.
 
-LIVE, and EDITED-ANCHORS are the pre-build state captured by the caller."
+LIVE, and EDITED-ANCHORS are the pre-build state captured by the caller.
+REFRESH-JUMP-BEHAVIOR, when non-nil, overrides
+`beacon-preview-refresh-jump-behavior' for this refresh."
   (when (and artifacts (buffer-live-p source-buffer))
     (with-current-buffer source-buffer
-      (let* ((html-path (plist-get artifacts :html))
+      (let* ((effective-refresh-jump-behavior
+              (or refresh-jump-behavior beacon-preview-refresh-jump-behavior))
+             (html-path (plist-get artifacts :html))
              (anchor (and live
                           (beacon-preview--live-preview-p)
-                          (eq beacon-preview-refresh-jump-behavior 'block)
+                          (eq effective-refresh-jump-behavior 'block)
                           (beacon-preview--current-anchor-maybe)))
              (flash-script (and edited-anchors
                                 (beacon-preview--flash-visible-anchors-script
                                  edited-anchors))))
         (when (beacon-preview--live-preview-p)
-          (if (eq beacon-preview-refresh-jump-behavior 'preserve)
+          (if (eq effective-refresh-jump-behavior 'preserve)
               (progn
                 (setq beacon-preview--last-html-path html-path)
                 (with-current-buffer beacon-preview--xwidget-buffer
@@ -3697,6 +3736,23 @@ preview blocks when those targets remain visible after refresh."
   (not (equal beacon-preview--last-build-tick
               (buffer-chars-modified-tick))))
 
+(defun beacon-preview--ensure-live-and-fresh-preview ()
+  "Ensure the current source buffer has a live, fresh preview.
+
+Return non-nil when this started an async build/open cycle and the caller
+should stop further synchronous preview actions for now."
+  (if (and (beacon-preview--live-preview-p)
+           (not (beacon-preview--preview-needs-build-p)))
+      nil
+    (beacon-preview-build-and-open)
+    t))
+
+(defun beacon-preview--show-tracked-preview ()
+  "Show the current source buffer's tracked preview buffer."
+  (if-let ((preview-buffer (beacon-preview--tracked-preview-buffer)))
+      (beacon-preview--show-preview-buffer preview-buffer)
+    (user-error "No live preview buffer is associated with this source buffer")))
+
 ;;;###autoload
 (defun beacon-preview-dwim ()
   "Build, foreground, or jump the preview for the current source buffer.
@@ -3707,15 +3763,12 @@ preview is already up to date, foreground it if hidden or jump to the current
 source block if it is already visible."
   (interactive)
   (cond
-   ((not (beacon-preview--live-preview-p))
-    (beacon-preview-build-and-open))
-   ((beacon-preview--preview-needs-build-p)
-    (beacon-preview-build-and-open))
+   ((beacon-preview--ensure-live-and-fresh-preview))
    ((beacon-preview--tracked-preview-window
      (beacon-preview--tracked-preview-buffer))
     (beacon-preview-jump-to-current-block))
    (t
-    (beacon-preview-switch-to-preview))))
+    (beacon-preview--show-tracked-preview))))
 
 ;;;###autoload
 (defun beacon-preview-switch-to-preview ()
@@ -3723,8 +3776,10 @@ source block if it is already visible."
 
 If no preview is live yet for the current source buffer, start one first."
   (interactive)
-  (if-let ((preview-buffer (beacon-preview--tracked-preview-buffer)))
-      (beacon-preview--show-preview-buffer preview-buffer)
+  (if (beacon-preview--live-preview-p)
+      (beacon-preview--run-after-ensuring-fresh-preview
+       #'beacon-preview--show-tracked-preview
+       t)
     (beacon-preview-build-and-open)))
 
 (defun beacon-preview--hide-preview-display ()
@@ -3750,13 +3805,12 @@ If no preview is live yet for the current source buffer, start one first."
 If no preview is live yet for the current source buffer, start one first."
   (interactive)
   (cond
-   ((not (beacon-preview--tracked-preview-buffer))
-    (beacon-preview-build-and-open))
    ((beacon-preview--tracked-preview-window
      (beacon-preview--tracked-preview-buffer))
     (beacon-preview--hide-preview-display))
    (t
-    (beacon-preview-switch-to-preview))))
+    (unless (beacon-preview--ensure-live-and-fresh-preview)
+      (beacon-preview--show-tracked-preview)))))
 
 (defun beacon-preview--current-session ()
   "Return the current xwidget webkit session or signal a user error."
@@ -3836,12 +3890,71 @@ effective vertical position within the preview viewport, plus optional
       (error nil))))
 
 ;;;###autoload
+(defun beacon-preview--run-after-ensuring-fresh-preview
+    (thunk &optional preserve-preview-position)
+  "Run THUNK in the current source buffer, rebuilding the preview first when stale.
+When the preview is stale relative to the source buffer (per
+`beacon-preview--preview-needs-build-p'), an async rebuild is started and
+THUNK is invoked in the build completion callback after a short delay so
+the xwidget has time to load the refreshed HTML.  The rebuild path also
+auto-saves the buffer via `beacon-preview--prepare-build-source' and
+signals `user-error' on an external-file conflict.
+
+When PRESERVE-PREVIEW-POSITION is non-nil, the stale-preview refresh keeps
+the preview near its pre-refresh scroll position before THUNK runs."
+  (if (not (beacon-preview--preview-needs-build-p))
+      (funcall thunk)
+    (let ((source-buffer (current-buffer))
+          (live (beacon-preview--live-preview-p))
+          (edited-anchors (and (beacon-preview--live-preview-p)
+                               (beacon-preview--edited-anchors)))
+          (refresh-jump-behavior
+           (and preserve-preview-position 'preserve)))
+      (beacon-preview--build-message-start)
+      (beacon-preview--build-current-file-async
+       (lambda (artifacts)
+         (beacon-preview--refresh-with-artifacts
+          artifacts source-buffer live edited-anchors
+          refresh-jump-behavior)
+         (run-at-time
+          beacon-preview-post-open-sync-delay nil
+          (lambda ()
+            (when (buffer-live-p source-buffer)
+              (with-current-buffer source-buffer
+                (funcall thunk))))))))))
+
+(defun beacon-preview--sync-source-to-preview-now (source-buffer preview-buffer)
+  "Query PREVIEW-BUFFER for a visible beacon and move SOURCE-BUFFER point to it."
+  (let ((session (beacon-preview--xwidget-session-for-buffer preview-buffer)))
+    (unless session
+      (user-error "No active xwidget webkit session found"))
+    (xwidget-webkit-execute-script
+     session
+     (beacon-preview--visible-preview-entry-script)
+     (lambda (value)
+       (let ((entry (beacon-preview--decode-visible-preview-entry value)))
+         (if (not entry)
+             (message "[beacon-preview] no visible preview beacon found")
+           (condition-case err
+               (progn
+                 (beacon-preview--apply-preview-entry-to-source entry source-buffer)
+                 (message "[beacon-preview] synced source to preview %s #%s"
+                          (alist-get 'kind entry)
+                          (alist-get 'index entry)))
+             (error
+              (message "[beacon-preview] failed to sync source to preview: %s"
+                       (error-message-string err))))))))))
+
 (defun beacon-preview-sync-source-to-preview ()
   "Move the source buffer to a simple visible block currently shown in preview.
 
 This is a first reverse-sync step: it asks the live preview for a visible
 beacon entry using a simple viewport heuristic, then moves the corresponding
-source buffer to that block or heading."
+source buffer to that block or heading.
+
+When the preview is stale relative to the source buffer, the preview is
+rebuilt first (auto-saving the source buffer if it has unsaved edits) so
+that reverse-sync operates on content aligned with the buffer."
   (interactive)
   (let* ((source-buffer (beacon-preview--context-source-buffer))
          (preview-buffer (beacon-preview--context-preview-buffer)))
@@ -3849,67 +3962,67 @@ source buffer to that block or heading."
       (user-error "No source buffer is associated with the current context"))
     (unless (buffer-live-p preview-buffer)
       (user-error "No live preview buffer is associated with the current context"))
-    (let ((session (beacon-preview--xwidget-session-for-buffer preview-buffer)))
-      (unless session
-        (user-error "No active xwidget webkit session found"))
-      (xwidget-webkit-execute-script
-       session
-       (beacon-preview--visible-preview-entry-script)
-       (lambda (value)
-         (let ((entry (beacon-preview--decode-visible-preview-entry value)))
-           (if (not entry)
-               (message "[beacon-preview] no visible preview beacon found")
-             (condition-case err
-                 (progn
-                   (beacon-preview--apply-preview-entry-to-source entry source-buffer)
-                   (message "[beacon-preview] synced source to preview %s #%s"
-                            (alist-get 'kind entry)
-                            (alist-get 'index entry)))
-               (error
-                (message "[beacon-preview] failed to sync source to preview: %s"
-                         (error-message-string err)))))))))))
+    (with-current-buffer source-buffer
+      (beacon-preview--run-after-ensuring-fresh-preview
+       (lambda ()
+         (when (buffer-live-p preview-buffer)
+           (beacon-preview--show-tracked-preview)
+           (setq preview-buffer (beacon-preview--tracked-preview-buffer))
+           (beacon-preview--sync-source-to-preview-now
+            source-buffer preview-buffer)))
+       t))))
 
 ;;;###autoload
 (defun beacon-preview-jump-to-anchor (anchor)
-  "Jump the current preview to ANCHOR using the injected BeaconPreview API."
+  "Jump the current preview to ANCHOR using the injected BeaconPreview API.
+When the preview is stale relative to the source buffer, it is rebuilt
+first so the jump lands on aligned content."
   (interactive "sAnchor: ")
-  (let* ((source-window (beacon-preview--source-window (current-buffer)))
-         (target-source-position (beacon-preview--target-source-position-maybe))
-         (raw-ratio (and source-window
-                         target-source-position
-                         (beacon-preview--window-visible-ratio-for-pos
-                          source-window
-                          target-source-position)))
-         (ratio (and raw-ratio
-                     (beacon-preview--effective-window-ratio raw-ratio))))
-    (beacon-preview--debug
-     "jump-to-anchor anchor=%S target-pos=%S raw-ratio=%S ratio=%S"
-     anchor target-source-position raw-ratio ratio)
-    (beacon-preview--execute-script
-     (beacon-preview--jump-script anchor ratio))))
+  (beacon-preview--run-after-ensuring-fresh-preview
+   (lambda ()
+     (let* ((source-window (beacon-preview--source-window (current-buffer)))
+            (target-source-position (beacon-preview--target-source-position-maybe))
+            (raw-ratio (and source-window
+                            target-source-position
+                            (beacon-preview--window-visible-ratio-for-pos
+                             source-window
+                             target-source-position)))
+            (ratio (and raw-ratio
+                        (beacon-preview--effective-window-ratio raw-ratio))))
+       (beacon-preview--debug
+        "jump-to-anchor anchor=%S target-pos=%S raw-ratio=%S ratio=%S"
+        anchor target-source-position raw-ratio ratio)
+       (beacon-preview--execute-script
+        (beacon-preview--jump-script anchor ratio))))))
 
 ;;;###autoload
 (defun beacon-preview-flash-current-target ()
-  "Flash the current source-correlated target in the live preview."
+  "Flash the current source-correlated target in the live preview.
+When the preview is stale relative to the source buffer, it is rebuilt
+first so the flashed element matches the current source block."
   (interactive)
   (unless (beacon-preview--live-preview-p)
     (user-error "No live preview is associated with the current buffer"))
-  (let ((anchor (beacon-preview--current-anchor-maybe)))
-    (unless anchor
-      (user-error "No current block or heading anchor found at point"))
-    (beacon-preview--execute-script
-     (format
-      (concat "(function () {"
-              "  if (!window.BeaconPreview || typeof window.BeaconPreview.flashAnchor !== 'function') {"
-              "    return false;"
-              "  }"
-              "  return window.BeaconPreview.flashAnchor(%s);"
-              "})();")
-      (beacon-preview--js-string-literal anchor)))))
+  (beacon-preview--run-after-ensuring-fresh-preview
+   (lambda ()
+     (let ((anchor (beacon-preview--current-anchor-maybe)))
+       (unless anchor
+         (user-error "No current block or heading anchor found at point"))
+       (beacon-preview--execute-script
+        (format
+         (concat "(function () {"
+                 "  if (!window.BeaconPreview || typeof window.BeaconPreview.flashAnchor !== 'function') {"
+                 "    return false;"
+                 "  }"
+                 "  return window.BeaconPreview.flashAnchor(%s);"
+                 "})();")
+         (beacon-preview--js-string-literal anchor)))))))
 
 ;;;###autoload
 (defun beacon-preview-jump-to-index (kind index)
-  "Jump the current preview to beacon KIND at INDEX."
+  "Jump the current preview to beacon KIND at INDEX.
+When the preview is stale relative to the source buffer, it is rebuilt
+first so the index refers to the same blocks the buffer currently has."
   (interactive
    (list
     (completing-read
@@ -3918,14 +4031,16 @@ source buffer to that block or heading."
      nil
      t)
     (read-number "Index: " 1)))
-  (beacon-preview--execute-script
-   (format
-    (concat "(function () {"
-            " if (!window.BeaconPreview) { return false; }"
-            " return window.BeaconPreview.jumpToIndex(%s, %d);"
-            "})();")
-    (beacon-preview--js-string-literal kind)
-    index)))
+  (beacon-preview--run-after-ensuring-fresh-preview
+   (lambda ()
+     (beacon-preview--execute-script
+      (format
+       (concat "(function () {"
+               " if (!window.BeaconPreview) { return false; }"
+               " return window.BeaconPreview.jumpToIndex(%s, %d);"
+               "})();")
+       (beacon-preview--js-string-literal kind)
+       index)))))
 
 ;;;###autoload
 (defun beacon-preview-reload ()
@@ -4029,8 +4144,10 @@ This aims to be closer to Pandoc's generated heading identifiers."
 
 (defun beacon-preview-jump-to-current-heading ()
   "Jump preview to the anchor derived from the current Markdown heading."
-  (beacon-preview-jump-to-anchor
-   (beacon-preview-current-heading-anchor)))
+  (beacon-preview--run-after-ensuring-fresh-preview
+   (lambda ()
+     (beacon-preview-jump-to-anchor
+      (beacon-preview-current-heading-anchor)))))
 
 (defun beacon-preview-jump-to-current-block ()
   "Jump preview to the current source block anchor.
@@ -4040,11 +4157,13 @@ tables, list items, and paragraphs. When no block anchor can be resolved, it
 falls back to the current heading anchor."
   (unless (beacon-preview--supported-source-mode-p)
     (user-error "Current mode is not configured for source-side beacon lookup"))
-  (let ((anchor (or (beacon-preview-current-block-anchor)
-                    (ignore-errors (beacon-preview-current-heading-anchor)))))
-    (unless anchor
-      (user-error "No current block or heading anchor found at point"))
-    (beacon-preview-jump-to-anchor anchor)))
+  (beacon-preview--run-after-ensuring-fresh-preview
+   (lambda ()
+     (let ((anchor (or (beacon-preview-current-block-anchor)
+                       (ignore-errors (beacon-preview-current-heading-anchor)))))
+       (unless anchor
+         (user-error "No current block or heading anchor found at point"))
+       (beacon-preview-jump-to-anchor anchor)))))
 
 ;;;###autoload
 (define-minor-mode beacon-preview-mode

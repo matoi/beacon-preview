@@ -31,28 +31,22 @@ include the fix from
 
 ## Installation
 
-Install from MELPA with `package-install`:
+Until this package is published on MELPA, install it directly from the
+repository with `package-vc`:
 
 ```elisp
-(package-install 'beacon-preview)
+(package-vc-install "https://github.com/matoi/beacon-preview")
 ```
 
-If you use `use-package`, a minimal MELPA-based setup looks like:
+If you use `use-package`, a minimal repository-based setup looks like:
 
 ```elisp
 (use-package beacon-preview
-  :ensure t
+  :vc (:url "https://github.com/matoi/beacon-preview")
   :hook ((markdown-mode . beacon-preview-mode)
          (gfm-mode . beacon-preview-mode)
          (markdown-ts-mode . beacon-preview-mode)
          (org-mode . beacon-preview-mode)))
-```
-
-If you want to track the repository directly instead of MELPA, use
-`package-vc`:
-
-```elisp
-(package-vc-install "https://github.com/matoi/beacon-preview")
 ```
 
 For a local checkout, add the `lisp/` directory to `load-path` and require the
@@ -96,7 +90,7 @@ If you want a ready-to-paste `init.el` example, start with:
 
 ```elisp
 (use-package beacon-preview
-  :ensure t
+  :vc (:url "https://github.com/matoi/beacon-preview")
   :hook ((markdown-mode . beacon-preview-mode)
          (gfm-mode . beacon-preview-mode)
          (markdown-ts-mode . beacon-preview-mode)
@@ -110,7 +104,7 @@ A slightly more opinionated example for daily use might look like:
 
 ```elisp
 (use-package beacon-preview
-  :ensure t
+  :vc (:url "https://github.com/matoi/beacon-preview")
   :hook ((markdown-mode . beacon-preview-mode)
          (gfm-mode . beacon-preview-mode)
          (markdown-ts-mode . beacon-preview-mode)
@@ -251,7 +245,9 @@ Open a Markdown or Org buffer and run:
 This single command handles the entire preview lifecycle:
 
 - when no preview exists, it builds artifacts asynchronously and opens the preview
-- when a preview is already live, it jumps to the current source block
+- when a preview is already live and visible, it jumps to the current source block
+- when a preview is already live but hidden, it foregrounds that preview without changing its current position
+- when a live preview is stale, it rebuilds first and then continues with the same source-driven behavior
 
 The jump prefers the nearest block-level element (code block, blockquote,
 table, list item, or paragraph) and falls back to the current heading. It also
@@ -261,6 +257,16 @@ For source-side block matching, Markdown uses cached tree-sitter entries and
 Org uses cached `org-element` entries. This keeps kind/index lookup aligned
 with the processed preview HTML block cache without rescanning the buffer from
 the top on every sync step.
+
+If you only want to show the tracked preview without syncing it to the current
+source location, use:
+
+```elisp
+(beacon-preview-switch-to-preview)
+```
+
+This refreshes a stale live preview before showing it, but does not move the
+preview to the current source block.
 
 If you only want to visually reacquire the current resolved target without
 scrolling the preview, use:
@@ -276,8 +282,12 @@ preview, use:
 (beacon-preview-sync-source-to-preview)
 ```
 
-That source jump also pushes the previous location onto the mark stack, so you
-can return with `C-u C-SPC`.
+This command shows the tracked preview and then moves the source buffer to the
+preview session's current position. If the preview is stale, it is rebuilt
+first while preserving the preview's current scroll position so reverse sync
+still reflects the preview location you were using. That source jump also
+pushes the previous location onto the mark stack, so you can return with
+`C-u C-SPC`.
 
 Reverse sync is driven from the top of the preview viewport rather than the
 viewport center. When a block start is visible, that topmost visible block
