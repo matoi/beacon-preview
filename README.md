@@ -18,28 +18,16 @@ It focuses on:
 - Emacs with xwidgets support
 - Emacs built with libxml support
 - a graphical Emacs session
-- Pandoc available in `PATH`, or configured explicitly from Emacs
+- Pandoc installed and available in `PATH`, or configured explicitly from Emacs
 - for Markdown source-side sync: Emacs `treesit` support with the `markdown` grammar available
 - for Org source-side sync: `org-element` support
 
-The package can still be installed from MELPA even if some of those runtime
-requirements are missing, but preview build/open and Markdown source-side sync
-depend on them at use time.
+Markdown source-side block detection assumes a working tree-sitter Markdown
+grammar.
 
-Markdown source-side block detection now assumes a working tree-sitter Markdown
-grammar. The old line-scanning fallback path is no longer used.
-
-Using Markdown source-side sync therefore requires tree-sitter Markdown
-libraries that include the upstream fix discussed in
+For Markdown source-side sync, use tree-sitter Markdown library builds that
+include the fix from
 [emacs-tree-sitter/tree-sitter-langs#1449](https://github.com/emacs-tree-sitter/tree-sitter-langs/issues/1449).
-If your current `libtree-sitter-markdown` / `libtree-sitter-markdown-inline`
-installation predates that fix, update those libraries before relying on
-Markdown source-side sync.
-
-After installing updated libraries, restart Emacs and confirm that both
-grammars are loadable. A quick sanity check is that the Markdown library should
-export `tree_sitter_markdown`, while the inline library should export
-`tree_sitter_markdown_inline`.
 
 ## Installation
 
