@@ -31,6 +31,30 @@
 (require 'org-element)
 (require 'url-util)
 
+(declare-function xwidget-webkit-browse-url "xwidget")
+(declare-function xwidget-webkit-current-session "xwidget")
+(declare-function xwidget-webkit-goto-url "xwidget")
+(declare-function xwidget-webkit-execute-script "xwidget")
+(declare-function xwidget-webkit-callback "xwidget")
+(declare-function xwidget-webkit-uri "xwidget")
+
+(defvar xwidget-webkit-last-session)
+(defvar beacon-preview-mode)
+(defvar beacon-preview-behavior-style)
+(defvar beacon-preview-flash-style)
+(defvar beacon-preview-flash-enabled)
+(defvar beacon-preview-flash-subtle-color)
+(defvar beacon-preview-flash-subtle-peak-color)
+(defvar beacon-preview-flash-subtle-duration-ms)
+(defvar beacon-preview-flash-strong-color)
+(defvar beacon-preview-flash-strong-peak-color)
+(defvar beacon-preview-flash-strong-outline-color)
+(defvar beacon-preview-flash-strong-outline-peak-color)
+(defvar beacon-preview-flash-strong-outline-width-px)
+(defvar beacon-preview-flash-strong-duration-ms)
+(defvar beacon-preview-flash-border-radius)
+(defvar beacon-preview-flash-easing)
+
 (defgroup beacon-preview nil
   "Preview local beaconable HTML in xwidget."
   :group 'tools
@@ -863,6 +887,9 @@ Set to nil to disable interception and let the xwidget follow links normally."
 (defvar-local beacon-preview--xwidget-buffer nil
   "Buffer showing the beacon preview via xwidget for the current source buffer.")
 
+(defvar-local beacon-preview--last-build-tick nil
+  "Buffer modification tick recorded for the most recent preview build.")
+
 (defvar-local beacon-preview--preview-frame nil
   "Dedicated frame associated with the current source buffer's preview.")
 
@@ -903,7 +930,8 @@ Set to nil to disable interception and let the xwidget follow links normally."
   "Cached Markdown block entries derived from tree-sitter for the current buffer.")
 
 (defvar-local beacon-preview--markdown-treesit-cache-tick nil
-  "Buffer modification tick used to validate `beacon-preview--markdown-treesit-cache'.")
+  "Buffer modification tick used to validate
+`beacon-preview--markdown-treesit-cache'.")
 
 (defvar-local beacon-preview--org-element-cache nil
   "Cached Org structural entries derived from `org-element' for the current buffer.")
@@ -1093,7 +1121,8 @@ back to the current source buffer."
   (concat "file://" (expand-file-name file)))
 
 (defun beacon-preview--current-anchor-maybe ()
-  "Return the current source-correlated anchor when source-side lookup is applicable.
+  "Return the current source-correlated anchor
+when source-side lookup is applicable.
 
 This prefers a more specific block anchor near point, including boundary
 positions that should resolve to the preceding block, and otherwise falls back
@@ -3486,6 +3515,7 @@ Returns a plist with the final `:html' path."
       (user-error "%s" (beacon-preview--build-error-message output-buffer)))
     (setq beacon-preview--last-html-path html-path)
     (beacon-preview--postprocess-preview-html-file html-path)
+    (setq beacon-preview--last-build-tick (buffer-chars-modified-tick))
     (when (called-interactively-p 'interactive)
       (message "Built preview: %s" html-path))
     (list :html html-path)))
@@ -3538,6 +3568,8 @@ first."
                      (with-current-buffer source-buffer
                        (setq beacon-preview--last-html-path html-path)
                        (beacon-preview--postprocess-preview-html-file html-path)
+                       (setq beacon-preview--last-build-tick
+                             (buffer-chars-modified-tick))
                        (beacon-preview--build-message-finish start-time)))
                    (funcall callback (list :html html-path))))
                (when (buffer-live-p output-buffer)
@@ -3660,16 +3692,30 @@ preview blocks when those targets remain visible after refresh."
        (beacon-preview--refresh-with-artifacts
         artifacts source-buffer live edited-anchors)))))
 
+(defun beacon-preview--preview-needs-build-p ()
+  "Return non-nil when the current source buffer needs a fresh preview build."
+  (not (equal beacon-preview--last-build-tick
+              (buffer-chars-modified-tick))))
+
 ;;;###autoload
 (defun beacon-preview-dwim ()
-  "Build, open, or jump the preview for the current source buffer.
+  "Build, foreground, or jump the preview for the current source buffer.
 
 When no live preview exists, build artifacts and open the preview.  When a
-live preview is already available, jump it to the current source block."
+live preview exists but is stale, rebuild and foreground it.  When a live
+preview is already up to date, foreground it if hidden or jump to the current
+source block if it is already visible."
   (interactive)
-  (if (beacon-preview--live-preview-p)
-      (beacon-preview-jump-to-current-block)
-    (beacon-preview-build-and-open)))
+  (cond
+   ((not (beacon-preview--live-preview-p))
+    (beacon-preview-build-and-open))
+   ((beacon-preview--preview-needs-build-p)
+    (beacon-preview-build-and-open))
+   ((beacon-preview--tracked-preview-window
+     (beacon-preview--tracked-preview-buffer))
+    (beacon-preview-jump-to-current-block))
+   (t
+    (beacon-preview-switch-to-preview))))
 
 ;;;###autoload
 (defun beacon-preview-switch-to-preview ()

@@ -13,6 +13,8 @@ It focuses on:
 
 ## Requirements
 
+`beacon-preview` works best when these pieces are already available:
+
 - Emacs with xwidgets support
 - Emacs built with libxml support
 - a graphical Emacs session
@@ -20,48 +22,46 @@ It focuses on:
 - for Markdown source-side sync: Emacs `treesit` support with the `markdown` grammar available
 - for Org source-side sync: `org-element` support
 
+The package can still be installed from MELPA even if some of those runtime
+requirements are missing, but preview build/open and Markdown source-side sync
+depend on them at use time.
+
 Markdown source-side block detection now assumes a working tree-sitter Markdown
 grammar. The old line-scanning fallback path is no longer used.
 
-**At the moment, using Markdown source-side sync requires fixing the
-tree-sitter Markdown library build definition and rebuilding the library
-locally before Emacs `treesit` can use it correctly.** In our current setup,
-the shipped Markdown library was not enough by itself; a local rebuild with the
-build-side issue corrected was required.
+Using Markdown source-side sync therefore requires tree-sitter Markdown
+libraries that include the upstream fix discussed in
+[emacs-tree-sitter/tree-sitter-langs#1449](https://github.com/emacs-tree-sitter/tree-sitter-langs/issues/1449).
+If your current `libtree-sitter-markdown` / `libtree-sitter-markdown-inline`
+installation predates that fix, update those libraries before relying on
+Markdown source-side sync.
 
-One working approach on macOS is:
-
-```sh
-brew install tree-sitter-cli
-git clone https://github.com/tree-sitter-grammars/tree-sitter-markdown
-cd tree-sitter-markdown
-
-cc -fPIC -I tree-sitter-markdown/src -c \
-  tree-sitter-markdown/src/parser.c \
-  tree-sitter-markdown/src/scanner.c
-cc -dynamiclib -o libtree-sitter-markdown.dylib parser.o scanner.o
-rm -f parser.o scanner.o
-
-cc -fPIC -I tree-sitter-markdown-inline/src -c \
-  tree-sitter-markdown-inline/src/parser.c \
-  tree-sitter-markdown-inline/src/scanner.c
-cc -dynamiclib -o libtree-sitter-markdown-inline.dylib parser.o scanner.o
-
-cp libtree-sitter-markdown.dylib ~/.emacs.d/tree-sitter/
-cp libtree-sitter-markdown-inline.dylib ~/.emacs.d/tree-sitter/
-```
-
-After replacing the libraries, restart Emacs and confirm that both grammars are
-loadable. A quick sanity check is that the Markdown library should export
-`tree_sitter_markdown`, while the inline library should export
+After installing updated libraries, restart Emacs and confirm that both
+grammars are loadable. A quick sanity check is that the Markdown library should
+export `tree_sitter_markdown`, while the inline library should export
 `tree_sitter_markdown_inline`.
-
-Related upstream issue: [emacs-tree-sitter/tree-sitter-langs#1449](https://github.com/emacs-tree-sitter/tree-sitter-langs/issues/1449)
 
 ## Installation
 
-Until this package is published on MELPA, install it directly from the
-repository with `package-vc`:
+Install from MELPA with `package-install`:
+
+```elisp
+(package-install 'beacon-preview)
+```
+
+If you use `use-package`, a minimal MELPA-based setup looks like:
+
+```elisp
+(use-package beacon-preview
+  :ensure t
+  :hook ((markdown-mode . beacon-preview-mode)
+         (gfm-mode . beacon-preview-mode)
+         (markdown-ts-mode . beacon-preview-mode)
+         (org-mode . beacon-preview-mode)))
+```
+
+If you want to track the repository directly instead of MELPA, use
+`package-vc`:
 
 ```elisp
 (package-vc-install "https://github.com/matoi/beacon-preview")
@@ -81,6 +81,18 @@ package:
   runtime (Pandoc invocation, libxml DOM instrumentation, xwidget control)
   lives here.
 
+## Quick Start
+
+After installing the package:
+
+1. Enable `beacon-preview-mode` in Markdown and/or Org buffers.
+2. Open a `.md` or `.org` file.
+3. Run `M-x beacon-preview-dwim`.
+
+That first `beacon-preview-dwim` call builds the HTML preview and opens it in
+an xwidget buffer. Later calls jump the live preview to the current source
+block or heading.
+
 ## Emacs Setup
 
 Enable the mode for Markdown and Org buffers:
@@ -96,7 +108,7 @@ If you want a ready-to-paste `init.el` example, start with:
 
 ```elisp
 (use-package beacon-preview
-  :vc (:url "https://github.com/matoi/beacon-preview")
+  :ensure t
   :hook ((markdown-mode . beacon-preview-mode)
          (gfm-mode . beacon-preview-mode)
          (markdown-ts-mode . beacon-preview-mode)
@@ -110,16 +122,16 @@ A slightly more opinionated example for daily use might look like:
 
 ```elisp
 (use-package beacon-preview
-  :vc (:url "https://github.com/matoi/beacon-preview")
+  :ensure t
   :hook ((markdown-mode . beacon-preview-mode)
          (gfm-mode . beacon-preview-mode)
          (markdown-ts-mode . beacon-preview-mode)
          (org-mode . beacon-preview-mode))
   :bind
   (:map beacon-preview-mode-map
-        ("C-c b o" . beacon-preview-dwim)
-        ("C-c b t" . beacon-preview-toggle-preview-display)
-        ("C-c b p" . beacon-preview-sync-source-to-preview))
+        ("C-c C-b o" . beacon-preview-dwim)
+        ("C-c C-b t" . beacon-preview-toggle-preview-display)
+        ("C-c C-b p" . beacon-preview-sync-source-to-preview))
   :custom
   (beacon-preview-behavior-style 'default)
   (beacon-preview-display-location 'side-window)
