@@ -20,6 +20,23 @@ jobs:
         with:
           version: "29.4"
 
+      - name: Install Markdown tree-sitter grammars
+        run: |
+          mkdir -p "$HOME/.emacs.d/tree-sitter"
+          git clone --depth=1 https://github.com/tree-sitter-grammars/tree-sitter-markdown /tmp/tree-sitter-markdown
+
+          cc -fPIC -I /tmp/tree-sitter-markdown/tree-sitter-markdown/src -c \
+            /tmp/tree-sitter-markdown/tree-sitter-markdown/src/parser.c \
+            /tmp/tree-sitter-markdown/tree-sitter-markdown/src/scanner.c
+          cc -shared -o "$HOME/.emacs.d/tree-sitter/libtree-sitter-markdown.so" parser.o scanner.o
+          rm -f parser.o scanner.o
+
+          cc -fPIC -I /tmp/tree-sitter-markdown/tree-sitter-markdown-inline/src -c \
+            /tmp/tree-sitter-markdown/tree-sitter-markdown-inline/src/parser.c \
+            /tmp/tree-sitter-markdown/tree-sitter-markdown-inline/src/scanner.c
+          cc -shared -o "$HOME/.emacs.d/tree-sitter/libtree-sitter-markdown-inline.so" parser.o scanner.o
+          rm -f parser.o scanner.o
+
       - name: Byte-compile package
         run: emacs --batch -Q -L lisp -f batch-byte-compile lisp/beacon-preview.el
 
