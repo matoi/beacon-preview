@@ -262,7 +262,7 @@ If you only want to show the tracked preview without syncing it to the current
 source location, use:
 
 ```elisp
-(beacon-preview-switch-to-preview)
+(beacon-preview-show-preview)
 ```
 
 This refreshes a stale live preview before showing it, but does not move the
@@ -461,7 +461,7 @@ that rename as well.
 Use:
 
 ```elisp
-(beacon-preview-switch-to-preview)
+(beacon-preview-show-preview)
 ```
 to jump back to the tracked preview for the current source buffer. If the
 current source buffer does not have a live preview yet, this command starts one
@@ -482,7 +482,7 @@ buffer does not have a live preview yet, this command starts one first.
 - `M-x beacon-preview-flash-current-target` - highlight the current source-correlated preview target without scrolling
 - `M-x beacon-preview-sync-source-to-preview` - move the source buffer to the block currently visible in the preview
 - `M-x beacon-preview-toggle-preview-display` - show or hide the tracked preview, starting one if needed
-- `M-x beacon-preview-switch-to-preview` - jump to the tracked preview, starting one if needed
+- `M-x beacon-preview-show-preview` - show the tracked preview, starting one if needed
 - `M-x beacon-preview-jump-to-anchor` - jump the preview to a specific anchor name
 - `M-x beacon-preview-reload` - reload the current preview page in xwidget
 - `M-x beacon-preview-apply-behavior-style` - apply a named bundle of preview-follow settings

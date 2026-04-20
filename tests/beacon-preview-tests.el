@@ -2993,7 +2993,7 @@ LineTerminators) must be escaped so they cannot terminate the literal."
           (delete-window preview-window))
         (kill-buffer preview-buffer)))))
 
-(ert-deftest beacon-preview-switch-to-preview-displays-tracked-buffer ()
+(ert-deftest beacon-preview-show-preview-displays-tracked-buffer ()
   (with-temp-buffer
     (let ((source-buffer (current-buffer))
           (preview-buffer (generate-new-buffer " *beacon-preview-switch*"))
@@ -3011,11 +3011,11 @@ LineTerminators) must be escaped so they cannot terminate the literal."
                        (lambda (buffer &optional _action)
                          (setq displayed buffer)
                          (selected-window))))
-              (beacon-preview-switch-to-preview)
+              (beacon-preview-show-preview)
               (should (eq displayed preview-buffer))))
         (kill-buffer preview-buffer)))))
 
-(ert-deftest beacon-preview-switch-to-preview-rebuilds-when-preview-is-stale ()
+(ert-deftest beacon-preview-show-preview-rebuilds-when-preview-is-stale ()
   (with-temp-buffer
     (let ((source-buffer (current-buffer))
           (preview-buffer (generate-new-buffer " *beacon-preview-switch*"))
@@ -3050,19 +3050,19 @@ LineTerminators) must be escaped so they cannot terminate the literal."
                        (lambda (buffer &optional _action)
                          (setq displayed buffer)
                          (selected-window))))
-              (beacon-preview-switch-to-preview)
+              (beacon-preview-show-preview)
               (should (= build-called 1))
               (should (eq refresh-behavior 'preserve))
               (should (eq displayed preview-buffer))))
         (kill-buffer preview-buffer)))))
 
-(ert-deftest beacon-preview-switch-to-preview-starts-preview-when-needed ()
+(ert-deftest beacon-preview-show-preview-starts-preview-when-needed ()
   (with-temp-buffer
     (let ((started nil))
       (cl-letf (((symbol-function 'beacon-preview-build-and-open)
                  (lambda ()
                    (setq started t))))
-        (beacon-preview-switch-to-preview)
+        (beacon-preview-show-preview)
         (should started)))))
 
 (ert-deftest beacon-preview-toggle-preview-display-shows-hidden-preview ()
@@ -3210,10 +3210,10 @@ LineTerminators) must be escaped so they cannot terminate the literal."
                        (setq displayed buffer)
                        (selected-window))))
             (with-current-buffer source-a
-              (beacon-preview-switch-to-preview)
+              (beacon-preview-show-preview)
               (should (eq displayed preview-a)))
             (with-current-buffer source-b
-              (beacon-preview-switch-to-preview)
+              (beacon-preview-show-preview)
               (should (eq displayed preview-b)))))
       (mapc (lambda (buffer)
               (when (buffer-live-p buffer)

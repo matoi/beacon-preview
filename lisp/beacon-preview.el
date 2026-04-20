@@ -3771,8 +3771,8 @@ source block if it is already visible."
     (beacon-preview--show-tracked-preview))))
 
 ;;;###autoload
-(defun beacon-preview-switch-to-preview ()
-  "Select the current source buffer's preview buffer.
+(defun beacon-preview-show-preview ()
+  "Show the current source buffer's tracked preview.
 
 If no preview is live yet for the current source buffer, start one first."
   (interactive)
