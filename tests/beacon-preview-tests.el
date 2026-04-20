@@ -545,6 +545,32 @@
         (beacon-preview-dwim)
         (should jumped)))))
 
+(ert-deftest beacon-preview-dwim-builds-when-preview-buffer-belongs-to-another-source ()
+  (let ((source-a (generate-new-buffer " *beacon-preview-source-a*"))
+        (source-b (generate-new-buffer " *beacon-preview-source-b*"))
+        (preview-a (generate-new-buffer " *beacon-preview-preview-a*"))
+        (opened nil)
+        (jumped nil))
+    (unwind-protect
+        (progn
+          (with-current-buffer source-a
+            (setq-local beacon-preview--xwidget-buffer preview-a))
+          (with-current-buffer preview-a
+            (setq-local beacon-preview--source-buffer source-a))
+          (with-current-buffer source-b
+            (setq-local beacon-preview--xwidget-buffer preview-a)
+            (cl-letf (((symbol-function 'beacon-preview-build-and-open)
+                       (lambda () (setq opened t)))
+                      ((symbol-function 'beacon-preview-jump-to-current-block)
+                       (lambda () (setq jumped t))))
+              (beacon-preview-dwim)
+              (should opened)
+              (should-not jumped))))
+      (mapc (lambda (buffer)
+              (when (buffer-live-p buffer)
+                (kill-buffer buffer)))
+            (list source-a source-b preview-a)))))
+
 (ert-deftest beacon-preview-window-line-ratio-stays-in-range ()
   (with-temp-buffer
     (dotimes (_ 40)
@@ -887,6 +913,130 @@ LineTerminators) must be escaped so they cannot terminate the literal."
             (should (string-match-p "pre > code\\.sourceCode" output))
             (should-not (string-match-p "pre &gt; code\\.sourceCode" output))))
       (delete-file html-file))))
+
+(ert-deftest beacon-preview-postprocess-preview-html-file-wraps-body-content-when-configured ()
+  (let ((html-file (make-temp-file "beacon-preview-html-" nil ".html"))
+        (beacon-preview-body-wrapper-class "markdown-body"))
+    (unwind-protect
+        (progn
+          (with-temp-file html-file
+            (insert
+             "<html><body>"
+             "<h1>Title</h1>"
+             "<p>Body.</p>"
+             "</body></html>"))
+          (let* ((cache (beacon-preview--postprocess-preview-html-file html-file))
+                 (entries (plist-get cache :ordered))
+                 (kinds (mapcar (lambda (entry) (alist-get 'kind entry)) entries))
+                 (output (with-temp-buffer
+                           (insert-file-contents html-file)
+                           (buffer-string))))
+            (should (string-match-p "<article class=\"markdown-body\">" output))
+            (should (equal kinds '("h1" "p")))
+            (should (string-match-p "data-beacon-kind=\"h1\"" output))
+            (should (string-match-p "data-beacon-kind=\"p\"" output))))
+      (delete-file html-file))))
+
+(ert-deftest beacon-preview-postprocess-preview-html-file-normalizes-mermaid-blocks ()
+  (let ((html-file (make-temp-file "beacon-preview-html-" nil ".html"))
+        (mermaid-file (make-temp-file "beacon-preview-mermaid-" nil ".js"))
+        (beacon-preview-mermaid-script-file nil))
+    (unwind-protect
+        (progn
+          (with-temp-file mermaid-file
+            (insert "window.mermaid = window.mermaid || {};"))
+          (setq beacon-preview-mermaid-script-file mermaid-file)
+          (with-temp-file html-file
+            (insert
+             "<html><body>"
+             "<pre class=\"mermaid\"><code>graph TD\nA--&gt;B\n</code></pre>"
+             "<pre class=\"elisp\"><code>(message &quot;hello&quot;)</code></pre>"
+             "</body></html>"))
+          (let ((output (progn
+                          (beacon-preview--postprocess-preview-html-file html-file)
+                          (with-temp-buffer
+                            (insert-file-contents html-file)
+                            (buffer-string)))))
+            (should (string-match-p "<div [^>]*class=\"mermaid\"" output))
+            (should (string-match-p "data-beacon-kind=\"pre\"" output))
+            (should (string-match-p "<pre [^>]*class=\"elisp\"" output))
+            (should (string-match-p
+                     (regexp-quote
+                      (format "<script src=\"%s\"></script>"
+                              (concat "file://" mermaid-file)))
+                     output))
+            (should (string-match-p "runMermaid" output))))
+      (delete-file html-file)
+      (delete-file mermaid-file))))
+
+(ert-deftest beacon-preview-postprocess-preview-html-file-skips-missing-mermaid-runtime ()
+  (let ((html-file (make-temp-file "beacon-preview-html-" nil ".html"))
+        (beacon-preview-mermaid-script-file "/tmp/definitely-missing-mermaid-runtime.js"))
+    (unwind-protect
+        (progn
+          (with-temp-file html-file
+            (insert
+             "<html><body><pre class=\"mermaid\"><code>graph TD\nA--&gt;B\n</code></pre></body></html>"))
+          (let ((output (progn
+                          (beacon-preview--postprocess-preview-html-file html-file)
+                          (with-temp-buffer
+                            (insert-file-contents html-file)
+                            (buffer-string)))))
+            (should (string-match-p "<div [^>]*class=\"mermaid\"" output))
+            (should-not (string-match-p "runMermaid" output))
+            (should (string-match-p "window\\.BeaconPreview" output))))
+      (delete-file html-file))))
+
+(ert-deftest beacon-preview-postprocess-preview-html-file-messages-when-mermaid-runtime-is-missing ()
+  (let ((html-file (make-temp-file "beacon-preview-html-" nil ".html"))
+        (beacon-preview-mermaid-script-file "/tmp/definitely-missing-mermaid-runtime.js")
+        (captured-message nil))
+    (unwind-protect
+        (progn
+          (with-temp-file html-file
+            (insert
+             "<html><body><pre class=\"mermaid\"><code>graph TD\nA--&gt;B\n</code></pre></body></html>"))
+          (cl-letf (((symbol-function 'message)
+                     (lambda (format-string &rest args)
+                       (setq captured-message (apply #'format format-string args)))))
+            (beacon-preview--postprocess-preview-html-file html-file))
+          (should (string-match-p "Mermaid runtime not found" captured-message)))
+      (delete-file html-file))))
+
+(ert-deftest beacon-preview-postprocess-preview-html-file-uses-major-mode-default-wrapper-and-mermaid ()
+  (let ((html-file (make-temp-file "beacon-preview-html-" nil ".html"))
+        (mermaid-file (make-temp-file "beacon-preview-mermaid-" nil ".js")))
+    (unwind-protect
+        (with-temp-buffer
+          (setq-local major-mode 'gfm-mode)
+          (let ((beacon-preview-build-settings-by-source-kind
+                 '((markdown :body-wrapper-class "source-kind-body")))
+                (beacon-preview-build-settings-by-major-mode
+                 `((gfm-mode
+                    :body-wrapper-class "markdown-body"
+                    :mermaid-script-file ,mermaid-file))))
+            (with-temp-file mermaid-file
+              (insert "window.mermaid = window.mermaid || {};"))
+            (with-temp-file html-file
+              (insert
+               "<html><body>"
+               "<pre class=\"mermaid\"><code>graph TD\nA--&gt;B\n</code></pre>"
+               "</body></html>"))
+            (let ((output (progn
+                            (beacon-preview--postprocess-preview-html-file html-file)
+                            (with-temp-buffer
+                              (insert-file-contents html-file)
+                              (buffer-string)))))
+              (should (string-match-p "<article class=\"markdown-body\">" output))
+              (should-not (string-match-p "<article class=\"source-kind-body\">" output))
+              (should (string-match-p "<div [^>]*class=\"mermaid\"" output))
+              (should (string-match-p
+                       (regexp-quote
+                        (format "<script src=\"%s\"></script>"
+                                (concat "file://" mermaid-file)))
+                       output)))))
+      (delete-file html-file)
+      (delete-file mermaid-file))))
 
 (ert-deftest beacon-preview-source-block-range-for-markdown-paragraph ()
   (with-temp-buffer
@@ -1387,6 +1537,294 @@ LineTerminators) must be escaped so they cannot terminate the literal."
         (when (get-file-buffer source-file)
           (kill-buffer (get-file-buffer source-file))))
       (delete-directory tmp-root t))))
+
+(ert-deftest beacon-preview-build-args-omit-css-when-unconfigured ()
+  (with-temp-buffer
+    (setq-local buffer-file-name "/tmp/sample.md")
+    (setq-local major-mode 'markdown-mode)
+    (let ((beacon-preview-pandoc-css-files nil))
+      (cl-letf (((symbol-function 'beacon-preview--command-available-p)
+                 (lambda (_command) t))
+                ((symbol-function 'beacon-preview--prepare-build-source)
+                 (lambda ()
+                   (list :input-file "/tmp/input.md"
+                         :output-dir temporary-file-directory
+                         :default-directory temporary-file-directory)))
+                ((symbol-function 'beacon-preview--artifact-paths)
+                 (lambda ()
+                   (list :html (expand-file-name "out.html" temporary-file-directory)))))
+        (should-not (member "--css"
+                            (plist-get (beacon-preview--build-args) :args)))))))
+
+(ert-deftest beacon-preview-build-args-include-one-css-file ()
+  (let ((css-file (make-temp-file "beacon-preview-css-" nil ".css")))
+    (unwind-protect
+        (with-temp-buffer
+          (setq-local buffer-file-name "/tmp/sample.md")
+          (setq-local major-mode 'markdown-mode)
+          (let ((beacon-preview-pandoc-css-files (list css-file)))
+            (cl-letf (((symbol-function 'beacon-preview--command-available-p)
+                       (lambda (_command) t))
+                      ((symbol-function 'beacon-preview--prepare-build-source)
+                       (lambda ()
+                         (list :input-file "/tmp/input.md"
+                               :output-dir temporary-file-directory
+                               :default-directory temporary-file-directory)))
+                      ((symbol-function 'beacon-preview--artifact-paths)
+                       (lambda ()
+                         (list :html (expand-file-name "out.html" temporary-file-directory)))))
+              (let ((args (plist-get (beacon-preview--build-args) :args)))
+                (should (member "--css" args))
+                (should (member (expand-file-name css-file) args))))))
+      (delete-file css-file))))
+
+(ert-deftest beacon-preview-build-args-include-multiple-css-files-and-skip-missing-ones ()
+  (let ((css-a (make-temp-file "beacon-preview-css-a-" nil ".css"))
+        (css-b (make-temp-file "beacon-preview-css-b-" nil ".css"))
+        (missing "/tmp/beacon-preview-missing.css"))
+    (unwind-protect
+        (with-temp-buffer
+          (setq-local buffer-file-name "/tmp/sample.md")
+          (setq-local major-mode 'markdown-mode)
+          (let ((beacon-preview-pandoc-css-files (list css-a missing css-b)))
+            (cl-letf (((symbol-function 'beacon-preview--command-available-p)
+                       (lambda (_command) t))
+                      ((symbol-function 'beacon-preview--prepare-build-source)
+                       (lambda ()
+                         (list :input-file "/tmp/input.md"
+                               :output-dir temporary-file-directory
+                               :default-directory temporary-file-directory)))
+                      ((symbol-function 'beacon-preview--artifact-paths)
+                       (lambda ()
+                         (list :html (expand-file-name "out.html" temporary-file-directory)))))
+              (let ((args (plist-get (beacon-preview--build-args) :args)))
+                (should (= (length (seq-filter (lambda (arg)
+                                                 (string= arg "--css"))
+                                               args))
+                           2))
+                (should (member (expand-file-name css-a) args))
+                (should (member (expand-file-name css-b) args))
+                (should-not (member missing args))))))
+      (delete-file css-a)
+      (delete-file css-b))))
+
+(ert-deftest beacon-preview-build-args-message-when-css-file-is-missing ()
+  (let ((missing "/tmp/beacon-preview-missing.css")
+        (captured-message nil))
+    (with-temp-buffer
+      (setq-local buffer-file-name "/tmp/sample.md")
+      (setq-local major-mode 'markdown-mode)
+      (let ((beacon-preview-pandoc-css-files (list missing)))
+        (cl-letf (((symbol-function 'beacon-preview--command-available-p)
+                   (lambda (_command) t))
+                  ((symbol-function 'beacon-preview--prepare-build-source)
+                   (lambda ()
+                     (list :input-file "/tmp/input.md"
+                           :output-dir temporary-file-directory
+                           :default-directory temporary-file-directory)))
+                  ((symbol-function 'beacon-preview--artifact-paths)
+                   (lambda ()
+                     (list :html (expand-file-name "out.html" temporary-file-directory))))
+                  ((symbol-function 'message)
+                   (lambda (format-string &rest args)
+                     (setq captured-message (apply #'format format-string args)))))
+          (should-not (member "--css"
+                              (plist-get (beacon-preview--build-args) :args)))
+          (should (string-match-p "CSS file not found" captured-message)))))))
+
+(ert-deftest beacon-preview-build-args-use-major-mode-default-css-file ()
+  (let ((css-file (make-temp-file "beacon-preview-css-" nil ".css")))
+    (unwind-protect
+        (with-temp-buffer
+          (setq-local buffer-file-name "/tmp/sample.md")
+          (setq-local major-mode 'gfm-mode)
+          (let ((beacon-preview-build-settings-by-source-kind
+                 '((markdown :pandoc-css-files ("/tmp/source-kind.css"))))
+                (beacon-preview-build-settings-by-major-mode
+                 `((gfm-mode :pandoc-css-files (,css-file)))))
+            (cl-letf (((symbol-function 'beacon-preview--command-available-p)
+                       (lambda (_command) t))
+                      ((symbol-function 'beacon-preview--prepare-build-source)
+                       (lambda ()
+                         (list :input-file "/tmp/input.md"
+                               :output-dir temporary-file-directory
+                               :default-directory temporary-file-directory)))
+                      ((symbol-function 'beacon-preview--artifact-paths)
+                       (lambda ()
+                         (list :html (expand-file-name "out.html" temporary-file-directory)))))
+              (let ((args (plist-get (beacon-preview--build-args) :args)))
+                (should (member "--css" args))
+                (should (member (expand-file-name css-file) args))
+                (should-not (member "/tmp/source-kind.css" args))))))
+      (delete-file css-file))))
+
+(ert-deftest beacon-preview-build-args-respect-buffer-local-build-settings ()
+  (let ((css-file (make-temp-file "beacon-preview-css-" nil ".css"))
+        (template-file (make-temp-file "beacon-preview-template-" nil ".html"))
+        (mermaid-file (make-temp-file "beacon-preview-mermaid-" nil ".js")))
+    (unwind-protect
+        (with-temp-buffer
+          (setq-local buffer-file-name "/tmp/sample.md")
+          (setq-local major-mode 'markdown-mode)
+          (setq-local beacon-preview-pandoc-css-files (list css-file))
+          (setq-local beacon-preview-pandoc-template-file template-file)
+          (setq-local beacon-preview-mermaid-script-file mermaid-file)
+          (setq-local beacon-preview-body-wrapper-class "markdown-body")
+          (cl-letf (((symbol-function 'beacon-preview--command-available-p)
+                     (lambda (_command) t))
+                    ((symbol-function 'beacon-preview--prepare-build-source)
+                     (lambda ()
+                       (list :input-file "/tmp/input.md"
+                             :output-dir temporary-file-directory
+                             :default-directory temporary-file-directory)))
+                    ((symbol-function 'beacon-preview--artifact-paths)
+                     (lambda ()
+                       (list :html (expand-file-name "out.html" temporary-file-directory)))))
+            (let ((args (plist-get (beacon-preview--build-args) :args)))
+              (should (member "--template" args))
+              (should (member (expand-file-name template-file) args))
+              (should (member "--css" args))
+              (should (member (expand-file-name css-file) args)))
+            (let ((html-file (make-temp-file "beacon-preview-html-" nil ".html")))
+              (unwind-protect
+                  (progn
+                    (with-temp-file html-file
+                      (insert
+                       "<html><body><pre class=\"mermaid\"><code>graph TD\nA--&gt;B\n</code></pre></body></html>"))
+                    (let ((output (progn
+                                    (beacon-preview--postprocess-preview-html-file html-file)
+                                    (with-temp-buffer
+                                      (insert-file-contents html-file)
+                                      (buffer-string)))))
+                      (should (string-match-p "<article class=\"markdown-body\">" output))
+                      (should (string-match-p
+                               (regexp-quote
+                                (format "<script src=\"%s\"></script>"
+                                        (concat "file://" mermaid-file)))
+                               output))))
+                (delete-file html-file)))))
+      (delete-file css-file)
+      (delete-file template-file)
+      (delete-file mermaid-file))))
+
+(ert-deftest beacon-preview-build-settings-are-safe-file-local-variables ()
+  (should (safe-local-variable-p 'beacon-preview-build-settings
+                                 '(:pandoc-css-files ("/tmp/a.css"))))
+  (should (safe-local-variable-p 'beacon-preview-pandoc-template-file "/tmp/template.html"))
+  (should (safe-local-variable-p 'beacon-preview-pandoc-css-files '("/tmp/a.css" "/tmp/b.css")))
+  (should (safe-local-variable-p 'beacon-preview-mermaid-script-file "/tmp/mermaid.js"))
+  (should (safe-local-variable-p 'beacon-preview-body-wrapper-class "markdown-body")))
+
+(ert-deftest beacon-preview-current-build-config-uses-source-kind-defaults-for-markdown ()
+  (with-temp-buffer
+    (setq-local major-mode 'markdown-mode)
+    (let ((beacon-preview-build-settings-by-source-kind
+           '((markdown
+              :pandoc-css-files ("/tmp/github.css")
+              :body-wrapper-class "markdown-body"
+              :mermaid-script-file "/tmp/mermaid.js")
+             (org
+              :pandoc-css-files ("/tmp/org.css")))))
+      (let ((config (beacon-preview--current-build-config)))
+        (should (equal (plist-get config :pandoc-css-files)
+                       '("/tmp/github.css")))
+        (should (equal (plist-get config :body-wrapper-class)
+                       "markdown-body"))
+        (should (equal (plist-get config :mermaid-script-file)
+                       "/tmp/mermaid.js"))))))
+
+(ert-deftest beacon-preview-current-build-config-uses-source-kind-defaults-for-org ()
+  (with-temp-buffer
+    (setq-local major-mode 'org-mode)
+    (let ((beacon-preview-build-settings-by-source-kind
+           '((markdown
+              :pandoc-css-files ("/tmp/github.css"))
+             (org
+              :pandoc-css-files ("/tmp/org.css")
+              :body-wrapper-class "org-preview"))))
+      (let ((config (beacon-preview--current-build-config)))
+        (should (equal (plist-get config :pandoc-css-files)
+                       '("/tmp/org.css")))
+        (should (equal (plist-get config :body-wrapper-class)
+                       "org-preview"))))))
+
+(ert-deftest beacon-preview-current-build-config-major-mode-defaults-override-source-kind-defaults ()
+  (with-temp-buffer
+    (setq-local major-mode 'gfm-mode)
+    (let ((beacon-preview-build-settings-by-source-kind
+           '((markdown
+              :pandoc-css-files ("/tmp/github.css")
+              :body-wrapper-class "markdown-body"
+              :mermaid-script-file "/tmp/source-kind-mermaid.js")))
+          (beacon-preview-build-settings-by-major-mode
+           '((gfm-mode
+              :pandoc-css-files ("/tmp/gfm.css")
+              :mermaid-script-file "/tmp/gfm-mermaid.js"))))
+      (let ((config (beacon-preview--current-build-config)))
+        (should (equal (plist-get config :pandoc-css-files)
+                       '("/tmp/gfm.css")))
+        (should (equal (plist-get config :body-wrapper-class)
+                       "markdown-body"))
+        (should (equal (plist-get config :mermaid-script-file)
+                       "/tmp/gfm-mermaid.js"))))))
+
+(ert-deftest beacon-preview-current-build-config-buffer-local-variable-overrides-source-kind-defaults ()
+  (with-temp-buffer
+    (setq-local major-mode 'markdown-mode)
+    (setq-local beacon-preview-pandoc-css-files '("/tmp/local.css"))
+    (let ((beacon-preview-build-settings-by-source-kind
+           '((markdown
+              :pandoc-css-files ("/tmp/github.css")
+              :body-wrapper-class "markdown-body"))))
+      (let ((config (beacon-preview--current-build-config)))
+        (should (equal (plist-get config :pandoc-css-files)
+                       '("/tmp/local.css")))
+        (should (equal (plist-get config :body-wrapper-class)
+                       "markdown-body"))))))
+
+(ert-deftest beacon-preview-current-build-config-structured-local-settings-override-source-kind-defaults ()
+  (with-temp-buffer
+    (setq-local major-mode 'markdown-mode)
+    (setq-local beacon-preview-build-settings
+                '(:pandoc-css-files ("/tmp/structured.css")
+                  :body-wrapper-class "structured-body"))
+    (let ((beacon-preview-build-settings-by-source-kind
+           '((markdown
+              :pandoc-css-files ("/tmp/github.css")
+              :body-wrapper-class "markdown-body"))))
+      (let ((config (beacon-preview--current-build-config)))
+        (should (equal (plist-get config :pandoc-css-files)
+                       '("/tmp/structured.css")))
+        (should (equal (plist-get config :body-wrapper-class)
+                       "structured-body"))))))
+
+(ert-deftest beacon-preview-current-build-config-buffer-local-structured-settings-override-major-mode-defaults ()
+  (with-temp-buffer
+    (setq-local major-mode 'gfm-mode)
+    (setq-local beacon-preview-build-settings
+                '(:pandoc-template-file "/tmp/local-template.html"))
+    (let ((beacon-preview-build-settings-by-source-kind
+           '((markdown
+              :pandoc-template-file "/tmp/source-kind-template.html")))
+          (beacon-preview-build-settings-by-major-mode
+           '((gfm-mode
+              :pandoc-template-file "/tmp/gfm-template.html"))))
+      (let ((config (beacon-preview--current-build-config)))
+        (should (equal (plist-get config :pandoc-template-file)
+                       "/tmp/local-template.html"))))))
+
+(ert-deftest beacon-preview-current-build-config-unsupported-buffer-does-not-use-source-kind-defaults ()
+  (with-temp-buffer
+    (setq-local major-mode 'text-mode)
+    (let ((beacon-preview-build-settings-by-source-kind
+           '((markdown :pandoc-css-files ("/tmp/github.css"))
+             (org :pandoc-css-files ("/tmp/org.css"))))
+          (beacon-preview-build-settings-by-major-mode
+           '((gfm-mode :pandoc-css-files ("/tmp/gfm.css"))))
+          (beacon-preview-pandoc-css-files '("/tmp/global.css")))
+      (let ((config (beacon-preview--current-build-config)))
+        (should (equal (plist-get config :pandoc-css-files)
+                       '("/tmp/global.css")))))))
 
 (ert-deftest beacon-preview-build-current-file-passes-org-input-format ()
   (let* ((tmp-root (make-temp-file "beacon-preview-ert-" t))

@@ -80,8 +80,6 @@ package:
 - [lisp/beacon-preview.el](lisp/beacon-preview.el) — the package; the entire
   runtime (Pandoc invocation, libxml DOM instrumentation, xwidget control)
   lives here.
-- [scripts/beaconify_html.py](scripts/beaconify_html.py) — historical Python
-  prototype, kept for reference only. Not on the runtime path.
 
 ## Emacs Setup
 
@@ -133,6 +131,104 @@ If Emacs cannot find the right Pandoc binary through `PATH`, set it explicitly:
 
 ```elisp
 (setq beacon-preview-pandoc-command "/opt/homebrew/bin/pandoc")
+```
+
+Optional styling/runtime enhancements can be layered on without changing the
+basic preview pipeline:
+
+```elisp
+(setq beacon-preview-pandoc-css-files
+      '("/path/to/github-markdown.css"))
+(setq beacon-preview-body-wrapper-class "markdown-body")
+(setq beacon-preview-mermaid-script-file
+      "/path/to/mermaid.js")
+```
+
+These settings are all optional:
+
+- `beacon-preview-pandoc-css-files` appends `--css` arguments for existing CSS files
+- `beacon-preview-body-wrapper-class` wraps preview body content in one
+  `article` element so wrapper-scoped CSS can apply cleanly
+- `beacon-preview-mermaid-script-file` injects a local Mermaid runtime when present
+- no custom Pandoc template is required for this CSS + wrapper path
+
+If any of those files are absent, preview builds still succeed and fall back to
+plain Pandoc HTML or untranslated Mermaid source blocks.
+
+If you want simple defaults for all Markdown buffers versus all Org buffers,
+use `beacon-preview-build-settings-by-source-kind`:
+
+```elisp
+(setq beacon-preview-build-settings-by-source-kind
+      '((markdown
+         :pandoc-css-files ("/path/to/github-markdown.css")
+         :body-wrapper-class "markdown-body"
+         :mermaid-script-file "/path/to/node_modules/mermaid/dist/mermaid.js")
+        (org
+         :pandoc-css-files ("/path/to/org-preview.css"))))
+```
+
+If you also want true mode-specific overrides, layer
+`beacon-preview-build-settings-by-major-mode` on top:
+
+```elisp
+(setq beacon-preview-build-settings-by-major-mode
+      '((gfm-mode
+         :mermaid-script-file "/path/to/mermaid.js")
+        (markdown-ts-mode
+         :pandoc-template-file "/path/to/custom.html5")))
+```
+
+The precedence is:
+
+1. buffer-local individual variables
+2. buffer-local `beacon-preview-build-settings`
+3. `beacon-preview-build-settings-by-major-mode`
+4. `beacon-preview-build-settings-by-source-kind`
+5. global individual variables and global `beacon-preview-build-settings`
+
+That lets you keep one shared Markdown baseline while still overriding specific
+major modes when needed.
+
+One concrete setup might look like:
+
+```elisp
+(setq beacon-preview-pandoc-css-files
+      '("/path/to/github-markdown-css/github-markdown.css"))
+(setq beacon-preview-body-wrapper-class "markdown-body")
+(setq beacon-preview-mermaid-script-file
+      "/path/to/node_modules/mermaid/dist/mermaid.js")
+```
+
+For a quick manual check after enabling those options, open either:
+
+```text
+examples/mermaid-preview-sample.md
+examples/mermaid-preview-sample.org
+```
+
+and run `M-x beacon-preview-dwim`.
+
+These build settings also work well as buffer-local, file-local, or
+directory-local values, so Markdown and Org files can use different preview
+assets without changing your global defaults.  More specific scopes override
+broader defaults: local overrides beat major-mode defaults, which beat
+source-kind defaults, which beat global defaults. For example:
+
+```elisp
+;; In a hook or with `setq-local'
+(setq-local beacon-preview-pandoc-css-files
+            '("/path/to/project-preview.css"))
+(setq-local beacon-preview-body-wrapper-class "markdown-body")
+```
+
+or in file-local variables:
+
+```text
+<!-- Local Variables:
+beacon-preview-pandoc-css-files: ("/path/to/project-preview.css")
+beacon-preview-body-wrapper-class: "markdown-body"
+End: -->
 ```
 
 Most behavior knobs are available from:

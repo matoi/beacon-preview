@@ -82,6 +82,121 @@ dedicated preview frame for all source buffers."
   :type 'string
   :group 'beacon-preview-build)
 
+(defun beacon-preview--string-list-p (value)
+  "Return non-nil when VALUE is nil or a list of strings."
+  (or (null value)
+      (and (listp value)
+           (seq-every-p #'stringp value))))
+
+(defun beacon-preview--optional-string-p (value)
+  "Return non-nil when VALUE is nil or a string."
+  (or (null value)
+      (stringp value)))
+
+(defconst beacon-preview--build-setting-keys
+  '(:pandoc-template-file
+    :pandoc-css-files
+    :mermaid-script-file
+    :body-wrapper-class)
+  "Build setting keys accepted by beacon preview build config plists.")
+
+(defun beacon-preview--build-settings-plist-p (value)
+  "Return non-nil when VALUE is a valid build settings plist."
+  (when (listp value)
+    (let ((tail value)
+          (valid t))
+      (while (and valid tail)
+        (let ((key (car tail))
+              (setting (cadr tail)))
+          (setq valid
+                (and (keywordp key)
+                     (memq key beacon-preview--build-setting-keys)
+                     (pcase key
+                       (:pandoc-css-files (beacon-preview--string-list-p setting))
+                       (:pandoc-template-file (beacon-preview--optional-string-p setting))
+                       (:mermaid-script-file (beacon-preview--optional-string-p setting))
+                       (:body-wrapper-class (beacon-preview--optional-string-p setting))
+                       (_ nil))))
+          (setq tail (cddr tail))))
+      valid)))
+
+(defcustom beacon-preview-build-settings nil
+  "Optional structured build settings for preview HTML.
+
+Supported keys are `:pandoc-template-file', `:pandoc-css-files',
+`:mermaid-script-file', and `:body-wrapper-class'.  This can be set globally or
+locally, and more specific local values override broader defaults."
+  :type '(choice (const :tag "No structured overrides" nil)
+                 (sexp :tag "Build settings plist"))
+  :group 'beacon-preview-build)
+(put 'beacon-preview-build-settings 'safe-local-variable
+     #'beacon-preview--build-settings-plist-p)
+
+(defcustom beacon-preview-build-settings-by-source-kind nil
+  "Alist of default build settings plists keyed by source kind.
+
+Recognized source kinds are `markdown' and `org'.  Each value is a plist
+accepted by `beacon-preview-build-settings'."
+  :type '(alist :key-type (choice (const markdown) (const org))
+                :value-type sexp)
+  :group 'beacon-preview-build)
+
+(defcustom beacon-preview-build-settings-by-major-mode nil
+  "Alist of default build settings plists keyed by major mode symbols.
+
+Each key should be a major mode symbol such as `markdown-mode', `gfm-mode',
+`markdown-ts-mode', or `org-mode'.  Each value is a plist accepted by
+`beacon-preview-build-settings'.  When both source-kind and major-mode
+defaults apply, the major-mode entry wins."
+  :type '(alist :key-type symbol
+                :value-type sexp)
+  :group 'beacon-preview-build)
+
+(defcustom beacon-preview-pandoc-template-file nil
+  "Optional Pandoc template file used for preview HTML builds.
+
+When nil, beacon preview uses Pandoc's built-in HTML template.  When set to an
+existing file, the build passes `--template' to Pandoc."
+  :type '(choice (const :tag "Use Pandoc default template" nil)
+                 file)
+  :group 'beacon-preview-build)
+(put 'beacon-preview-pandoc-template-file 'safe-local-variable
+     #'beacon-preview--optional-string-p)
+
+(defcustom beacon-preview-pandoc-css-files nil
+  "Optional CSS files to include in preview HTML builds.
+
+Each existing file is passed to Pandoc via a `--css' argument.  Missing files
+are ignored so CSS enhancements remain optional."
+  :type '(repeat file)
+  :group 'beacon-preview-build)
+(put 'beacon-preview-pandoc-css-files 'safe-local-variable
+     #'beacon-preview--string-list-p)
+
+(defcustom beacon-preview-mermaid-script-file nil
+  "Optional Mermaid runtime JavaScript file for preview HTML.
+
+When set to an existing file, beacon preview injects script tags into the
+generated HTML so Mermaid blocks can render in the preview browser.  Missing
+files are ignored."
+  :type '(choice (const :tag "Disabled" nil)
+                 file)
+  :group 'beacon-preview-build)
+(put 'beacon-preview-mermaid-script-file 'safe-local-variable
+     #'beacon-preview--optional-string-p)
+
+(defcustom beacon-preview-body-wrapper-class nil
+  "Optional CSS class applied to a single wrapper around preview body content.
+
+When non-nil, the HTML postprocess step wraps the body contents in one
+`article' element carrying this class.  This is useful for wrapper-scoped CSS
+such as `github-markdown-css'."
+  :type '(choice (const :tag "No wrapper" nil)
+                 string)
+  :group 'beacon-preview-build)
+(put 'beacon-preview-body-wrapper-class 'safe-local-variable
+     #'beacon-preview--optional-string-p)
+
 (defcustom beacon-preview-display-buffer-action
   '((display-buffer-reuse-window display-buffer-in-side-window)
     (side . right)
@@ -898,6 +1013,14 @@ of this setting."
   "Return non-nil when the current buffer is supported for source-side features."
   (apply #'derived-mode-p beacon-preview-source-modes))
 
+(defun beacon-preview--source-kind (&optional buffer)
+  "Return the high-level source kind for BUFFER, or nil when unsupported."
+  (with-current-buffer (or buffer (current-buffer))
+    (cond
+     ((derived-mode-p 'org-mode) 'org)
+     ((beacon-preview--markdown-source-mode-p) 'markdown)
+     (t nil))))
+
 (defun beacon-preview--pandoc-input-format (&optional buffer)
   "Return the Pandoc input format string for BUFFER, or signal a user error."
   (with-current-buffer (or buffer (current-buffer))
@@ -944,11 +1067,25 @@ window before concluding that the preview session is gone."
 
 (defun beacon-preview--xwidget-session ()
   "Return the xwidget session for the current source buffer's preview."
-  (beacon-preview--xwidget-session-for-buffer beacon-preview--xwidget-buffer))
+  (when-let ((preview-buffer (beacon-preview--tracked-preview-buffer)))
+    (beacon-preview--xwidget-session-for-buffer preview-buffer)))
+
+(defun beacon-preview--tracked-preview-buffer ()
+  "Return the current source buffer's tracked preview buffer, or nil.
+
+This rejects stale preview associations whose reverse link no longer points
+back to the current source buffer."
+  (when (buffer-live-p beacon-preview--xwidget-buffer)
+    (let ((source-buffer (buffer-local-value 'beacon-preview--source-buffer
+                                             beacon-preview--xwidget-buffer)))
+      (if (or (null source-buffer)
+              (eq source-buffer (current-buffer)))
+        beacon-preview--xwidget-buffer
+        nil))))
 
 (defun beacon-preview--live-preview-p ()
   "Return non-nil when the current source buffer has a live preview session."
-  (and (buffer-live-p beacon-preview--xwidget-buffer)
+  (and (beacon-preview--tracked-preview-buffer)
        (beacon-preview--xwidget-session)))
 
 (defun beacon-preview--file-url (file)
@@ -1165,7 +1302,7 @@ new preview buffer. The xwidget callback must already be installed for SESSION."
   "Return the source buffer for the current beacon preview context, or nil."
   (cond
    ((and (beacon-preview--supported-source-mode-p)
-         (buffer-live-p beacon-preview--xwidget-buffer))
+         (beacon-preview--tracked-preview-buffer))
     (current-buffer))
    ((buffer-live-p beacon-preview--source-buffer)
     beacon-preview--source-buffer)
@@ -1174,7 +1311,7 @@ new preview buffer. The xwidget callback must already be installed for SESSION."
 (defun beacon-preview--context-preview-buffer ()
   "Return the preview buffer for the current beacon preview context, or nil."
   (cond
-   ((buffer-live-p beacon-preview--xwidget-buffer)
+   ((beacon-preview--tracked-preview-buffer)
     beacon-preview--xwidget-buffer)
    ((and (buffer-live-p beacon-preview--source-buffer)
          (eq major-mode 'xwidget-webkit-mode))
@@ -1626,18 +1763,166 @@ ALIST is the mapping returned by
                     result t t)))
     result))
 
+(defun beacon-preview--current-build-config ()
+  "Return the current preview build settings as a plist.
+
+This snapshots user-facing build options so HTML postprocess work can preserve
+buffer-local values even while it uses temporary buffers internally."
+  (let* ((source-kind (beacon-preview--source-kind))
+         (major-mode-defaults (cdr (assq major-mode beacon-preview-build-settings-by-major-mode)))
+         (source-kind-defaults (cdr (assq source-kind beacon-preview-build-settings-by-source-kind)))
+         (config nil))
+    (unless (or (null major-mode-defaults)
+                (beacon-preview--build-settings-plist-p major-mode-defaults))
+      (user-error "Invalid beacon preview build settings for major mode %S: %S"
+                  major-mode
+                  major-mode-defaults))
+    (unless (or (null source-kind-defaults)
+                (beacon-preview--build-settings-plist-p source-kind-defaults))
+      (user-error "Invalid beacon preview build settings for source kind %S: %S"
+                  source-kind
+                  source-kind-defaults))
+    (setq config (append source-kind-defaults nil))
+    (setq config (append major-mode-defaults config))
+    (when beacon-preview-build-settings
+      (unless (beacon-preview--build-settings-plist-p beacon-preview-build-settings)
+        (user-error "Invalid beacon preview build settings: %S"
+                    beacon-preview-build-settings))
+      (setq config (append beacon-preview-build-settings config)))
+    (dolist (entry '((:pandoc-template-file . beacon-preview-pandoc-template-file)
+                     (:pandoc-css-files . beacon-preview-pandoc-css-files)
+                     (:mermaid-script-file . beacon-preview-mermaid-script-file)
+                     (:body-wrapper-class . beacon-preview-body-wrapper-class)))
+      (when (local-variable-p (cdr entry))
+        (setq config (plist-put config (car entry) (symbol-value (cdr entry))))))
+    (dolist (entry '((:pandoc-template-file . beacon-preview-pandoc-template-file)
+                     (:pandoc-css-files . beacon-preview-pandoc-css-files)
+                     (:mermaid-script-file . beacon-preview-mermaid-script-file)
+                     (:body-wrapper-class . beacon-preview-body-wrapper-class)))
+      (unless (plist-member config (car entry))
+        (setq config (plist-put config (car entry) (symbol-value (cdr entry))))))
+    config))
+
 (defun beacon-preview--serialize-html-dom (dom)
   "Return a serialized HTML string for libxml DOM root DOM."
   (with-temp-buffer
     (xml-print (list dom))
     (buffer-string)))
 
-(defun beacon-preview--instrument-html-dom (dom prefix)
+(defun beacon-preview--html-find-first-tag (node tag)
+  "Return the first descendant of NODE whose tag is TAG."
+  (when (listp node)
+    (if (eq (dom-tag node) tag)
+        node
+      (seq-some
+       (lambda (child)
+         (beacon-preview--html-find-first-tag child tag))
+       (dom-children node)))))
+
+(defun beacon-preview--html-set-children (node children)
+  "Replace NODE children with CHILDREN."
+  (setcdr (cdr node) children)
+  node)
+
+(defun beacon-preview--wrap-body-content (dom config)
+  "Wrap DOM body children in one article when configured."
+  (when-let* ((wrapper-class (plist-get config :body-wrapper-class))
+              ((not (string-empty-p wrapper-class)))
+              (body (beacon-preview--html-find-first-tag dom 'body)))
+    (let ((children (dom-children body)))
+      (beacon-preview--html-set-children
+       body
+       (list `(article ((class . ,wrapper-class)) ,@children)))))
+  dom)
+
+(defun beacon-preview--html-class-list (node)
+  "Return NODE classes as a list of strings."
+  (when-let ((class-value (dom-attr node 'class)))
+    (split-string class-value "[ \t\r\n]+" t)))
+
+(defun beacon-preview--html-class-member-p (node class-name)
+  "Return non-nil when NODE has CLASS-NAME."
+  (member class-name (beacon-preview--html-class-list node)))
+
+(defun beacon-preview--normalize-mermaid-blocks (dom)
+  "Normalize Pandoc Mermaid blocks in DOM for browser-side rendering."
+  (cl-labels
+      ((walk (node)
+         (when (listp node)
+           (when (and (eq (dom-tag node) 'pre)
+                      (beacon-preview--html-class-member-p node "mermaid"))
+             (let* ((texts (dom-texts node))
+                    (text (if (stringp texts)
+                              texts
+                            (mapconcat #'identity texts ""))))
+               ;; Keep pre-like manifest semantics after the node becomes a div.
+               (setcar node 'div)
+               (dom-set-attribute node 'data-beacon-kind "pre")
+               (beacon-preview--html-set-children node (list text))))
+           (dolist (child (dom-children node))
+             (walk child)))))
+    (walk dom))
+  dom)
+
+(defun beacon-preview--inject-into-head (html fragment)
+  "Insert FRAGMENT before the closing head tag in HTML."
+  (with-temp-buffer
+    (insert html)
+    (goto-char (point-min))
+    (if (re-search-forward "</head\\s-*>" nil t)
+        (replace-match (concat fragment "\n</head>") t t)
+      (goto-char (point-min))
+      (if (re-search-forward "<body\\(?:[^>]*\\)>" nil t)
+          (replace-match (concat "<head>\n" fragment "\n</head>\n" (match-string 0))
+                         t t)
+        (goto-char (point-min))
+        (insert "<head>\n" fragment "\n</head>\n")))
+    (buffer-string)))
+
+(defun beacon-preview--render-mermaid-script-tags (config)
+  "Return optional Mermaid runtime script tags, or nil when unavailable."
+  (let ((script-file (plist-get config :mermaid-script-file)))
+    (when script-file
+      (if (file-exists-p script-file)
+        (let ((script-url (beacon-preview--file-url
+                           script-file)))
+          (format
+           (concat
+            "<script src=\"%s\"></script>\n"
+            "<script>\n"
+            "(function () {\n"
+            "  function runMermaid() {\n"
+            "    if (!window.mermaid) { return; }\n"
+            "    if (typeof mermaid.initialize === 'function') {\n"
+            "      mermaid.initialize({ startOnLoad: false });\n"
+            "    }\n"
+            "    if (typeof mermaid.run === 'function') {\n"
+            "      mermaid.run({ querySelector: '.mermaid' });\n"
+            "      return;\n"
+            "    }\n"
+            "    if (typeof mermaid.init === 'function') {\n"
+            "      mermaid.init(undefined, document.querySelectorAll('.mermaid'));\n"
+            "    }\n"
+            "  }\n"
+            "  if (document.readyState === 'loading') {\n"
+            "    document.addEventListener('DOMContentLoaded', runMermaid, { once: true });\n"
+            "  } else {\n"
+            "    runMermaid();\n"
+            "  }\n"
+            "})();\n"
+            "</script>")
+           script-url))
+        (message "[beacon-preview] Mermaid runtime not found: %s"
+                 script-file)
+        nil))))
+
+(defun beacon-preview--instrument-html-dom (dom prefix config)
   "Instrument HTML DOM with preview beacons using PREFIX.
 
 Return a plist containing `:html' and `:entries'."
   (let ((counters (make-hash-table :test #'equal))
         (entries nil))
+    (beacon-preview--wrap-body-content dom config)
     (cl-labels
         ((walk (node container-depth)
            (when (listp node)
@@ -1666,8 +1951,8 @@ Return a plist containing `:html' and `:entries'."
                (dolist (child (dom-children node))
                  (walk child child-depth))))))
       (walk dom 0))
-    (list :html (beacon-preview--inject-navigation-api
-                 (beacon-preview--serialize-html-dom dom))
+    (beacon-preview--normalize-mermaid-blocks dom)
+    (list :html (beacon-preview--serialize-html-dom dom)
           :entries entries)))
 
 (defun beacon-preview--postprocess-preview-html-file (html-path &optional prefix)
@@ -1675,6 +1960,7 @@ Return a plist containing `:html' and `:entries'."
 
 PREFIX defaults to `beacon'."
   (let* ((prefix (or prefix "beacon"))
+         (config (beacon-preview--current-build-config))
          (protected
           (with-temp-buffer
             (insert-file-contents html-path)
@@ -1685,9 +1971,14 @@ PREFIX defaults to `beacon'."
           (with-temp-buffer
             (insert protected-html)
             (let ((dom (libxml-parse-html-region (point-min) (point-max))))
-              (beacon-preview--instrument-html-dom dom prefix))))
+              (beacon-preview--instrument-html-dom dom prefix config))))
          (html (beacon-preview--restore-script-style-bodies
                 (plist-get result :html) restore-alist))
+         (html (if-let ((mermaid-fragment
+                         (beacon-preview--render-mermaid-script-tags config)))
+                   (beacon-preview--inject-into-head html mermaid-fragment)
+                 html))
+         (html (beacon-preview--inject-navigation-api html))
          (entries (plist-get result :entries)))
     (with-temp-file html-path
       (insert html))
@@ -3024,7 +3315,7 @@ it is currently hidden behind another buffer."
          (url (if ratio
                   (beacon-preview--file-url file)
                 (beacon-preview--preview-url file anchor)))
-         (preview-buffer beacon-preview--xwidget-buffer)
+         (preview-buffer (beacon-preview--tracked-preview-buffer))
          (opening-buffer (unless preview-buffer
                            (generate-new-buffer
                             (format " *beacon-preview-opening: %s*"
@@ -3126,6 +3417,22 @@ it is currently hidden behind another buffer."
   (unless (beacon-preview--command-available-p beacon-preview-pandoc-command)
     (user-error "Pandoc executable not found: %s" beacon-preview-pandoc-command)))
 
+(defun beacon-preview--existing-paths (paths)
+  "Return PATHS filtered to existing filesystem entries."
+  (seq-filter #'file-exists-p paths))
+
+(defun beacon-preview--pandoc-css-args (config)
+  "Return optional `--css' args for configured preview CSS files."
+  (let ((existing nil))
+    (dolist (path (plist-get config :pandoc-css-files))
+      (if (file-exists-p path)
+          (setq existing (append existing (list (expand-file-name path))))
+        (message "[beacon-preview] CSS file not found: %s" path)))
+    (apply #'append
+           (mapcar (lambda (path)
+                     (list "--css" path))
+                   existing))))
+
 (defun beacon-preview--build-args ()
   "Return the argument list for the Pandoc build process.
 
@@ -3134,16 +3441,24 @@ plist includes `:program', `:args', `:html', and `:default-directory'."
   (beacon-preview--validate-build-prerequisites)
   (let* ((build-source (beacon-preview--prepare-build-source))
          (input-format (beacon-preview--pandoc-input-format))
+         (config (beacon-preview--current-build-config))
          (source-file (plist-get build-source :input-file))
          (artifacts (beacon-preview--artifact-paths))
          (html-path (plist-get artifacts :html))
-         (output-dir (plist-get build-source :output-dir)))
+         (output-dir (plist-get build-source :output-dir))
+         (args (append
+                (list "-f" input-format
+                      source-file
+                      "-s")
+                (when (and (plist-get config :pandoc-template-file)
+                           (file-exists-p (plist-get config :pandoc-template-file)))
+                  (list "--template"
+                        (expand-file-name (plist-get config :pandoc-template-file))))
+                (beacon-preview--pandoc-css-args config)
+                (list "-o" html-path))))
     (make-directory output-dir t)
     (list :program beacon-preview-pandoc-command
-          :args (list "-f" input-format
-                      source-file
-                      "-s"
-                      "-o" html-path)
+          :args args
           :html html-path
           :default-directory (plist-get build-source :default-directory))))
 
@@ -3362,16 +3677,17 @@ live preview is already available, jump it to the current source block."
 
 If no preview is live yet for the current source buffer, start one first."
   (interactive)
-  (if (buffer-live-p beacon-preview--xwidget-buffer)
-      (beacon-preview--show-preview-buffer beacon-preview--xwidget-buffer)
+  (if-let ((preview-buffer (beacon-preview--tracked-preview-buffer)))
+      (beacon-preview--show-preview-buffer preview-buffer)
     (beacon-preview-build-and-open)))
 
 (defun beacon-preview--hide-preview-display ()
   "Hide the current source buffer's visible preview display."
-  (unless (buffer-live-p beacon-preview--xwidget-buffer)
+  (unless (beacon-preview--tracked-preview-buffer)
     (user-error "No live preview buffer is associated with this source buffer"))
   (let ((preview-window
-         (beacon-preview--tracked-preview-window beacon-preview--xwidget-buffer)))
+         (beacon-preview--tracked-preview-window
+          (beacon-preview--tracked-preview-buffer))))
     (unless (window-live-p preview-window)
       (user-error "Preview is not currently visible"))
     (let* ((preview-frame (beacon-preview--live-preview-frame (current-buffer)))
@@ -3388,9 +3704,10 @@ If no preview is live yet for the current source buffer, start one first."
 If no preview is live yet for the current source buffer, start one first."
   (interactive)
   (cond
-   ((not (buffer-live-p beacon-preview--xwidget-buffer))
+   ((not (beacon-preview--tracked-preview-buffer))
     (beacon-preview-build-and-open))
-   ((beacon-preview--tracked-preview-window beacon-preview--xwidget-buffer)
+   ((beacon-preview--tracked-preview-window
+     (beacon-preview--tracked-preview-buffer))
     (beacon-preview--hide-preview-display))
    (t
     (beacon-preview-switch-to-preview))))
