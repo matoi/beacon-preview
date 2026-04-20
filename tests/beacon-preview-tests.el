@@ -17,6 +17,12 @@
 (advice-add 'beacon-preview--build-current-file-async :override
             #'beacon-preview-test--sync-async-build)
 
+(defun beacon-preview-test--assert-markdown-smoke-prereqs ()
+  "Assert that real Markdown build prerequisites are available."
+  (should (beacon-preview--command-available-p beacon-preview-pandoc-command))
+  (should (fboundp 'treesit-language-available-p))
+  (should (treesit-language-available-p 'markdown)))
+
 (ert-deftest beacon-preview-source-temp-directory-is-stable ()
   (let* ((beacon-preview-temporary-root "/tmp/beacon-preview-tests/")
          (source-a "/tmp/project-a/sample.md")
@@ -1293,6 +1299,39 @@ LineTerminators) must be escaped so they cannot terminate the literal."
             (should beacon-preview--manifest)
             (should beacon-preview--preview-html-cache)
             (kill-buffer (current-buffer))))
+      (ignore-errors
+        (when (get-file-buffer source-file)
+          (kill-buffer (get-file-buffer source-file))))
+      (delete-directory tmp-root t))))
+
+(ert-deftest beacon-preview-build-current-file-smoke-test-with-real-pandoc-and-grammar ()
+  (beacon-preview-test--assert-markdown-smoke-prereqs)
+  (let* ((tmp-root (make-temp-file "beacon-preview-ert-" t))
+         (source-file (expand-file-name "sample.md" tmp-root))
+         (beacon-preview-temporary-root (expand-file-name "preview-root" tmp-root)))
+    (unwind-protect
+        (progn
+          (with-temp-file source-file
+            (insert
+             "# Title\n\n"
+             "## Section\n\n"
+             "First paragraph.\n\n"
+             "```elisp\n(message \"hello\")\n```\n"))
+          (find-file source-file)
+          (setq-local major-mode 'markdown-mode)
+          (let* ((artifacts (beacon-preview-build-current-file))
+                 (html-path (plist-get artifacts :html))
+                 (html (with-temp-buffer
+                         (insert-file-contents html-path)
+                         (buffer-string))))
+            (should (file-exists-p html-path))
+            (should beacon-preview--manifest)
+            (should beacon-preview--preview-html-cache)
+            (should (string-match-p "data-beacon-kind=\"h2\"" html))
+            (should (string-match-p "data-beacon-kind=\"p\"" html))
+            (should (string-match-p "data-beacon-kind=\"pre\"" html))
+            (should (string-match-p "id=\"section\"" html)))
+          (kill-buffer (current-buffer)))
       (ignore-errors
         (when (get-file-buffer source-file)
           (kill-buffer (get-file-buffer source-file))))
