@@ -37,6 +37,9 @@ jobs:
           cc -shared -o "$HOME/.emacs.d/tree-sitter/libtree-sitter-markdown-inline.so" parser.o scanner.o
           rm -f parser.o scanner.o
 
+      - name: Install Pandoc
+        run: sudo apt-get update && sudo apt-get install -y pandoc
+
       - name: Byte-compile package
         run: emacs --batch -Q -L lisp -f batch-byte-compile lisp/beacon-preview.el
 
