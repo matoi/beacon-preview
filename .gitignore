@@ -2,5 +2,6 @@
 /AGENTS.md
 /scripts/__pycache__/
 /tests/__pycache__/
+/lisp/*.elc
 /CLAUDE.md
 /TODO.md
