@@ -156,9 +156,17 @@ install an official release from
 [pandoc.org/installing](https://pandoc.org/installing.html):
 
 ```elisp
-;; Change this if 3030 is already in use on your machine.
+;; Change these if you want Beacon Preview to talk to a different
+;; `pandoc server' endpoint.
+(setq beacon-preview-pandoc-server-host "127.0.0.1")
 (setq beacon-preview-pandoc-server-port 3030)
 ```
+
+By default Beacon Preview connects to `http://127.0.0.1:3030/`. If you change
+`beacon-preview-pandoc-server-port`, Beacon Preview will use that port for both
+health checks and auto-started managed `pandoc server` processes. This is
+useful when port `3030` is already in use or when you want Beacon Preview to
+talk to an already running `pandoc server`.
 
 Optional styling/runtime enhancements can be layered on without changing the
 basic preview pipeline:
