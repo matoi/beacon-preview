@@ -20,7 +20,7 @@ It focuses on:
 - Emacs with xwidgets support
 - Emacs built with libxml support
 - a graphical Emacs session
-- Pandoc installed and available in `PATH`, or configured explicitly from Emacs
+- Pandoc 3.0 or newer, built with the `+server` feature, installed and available in `PATH` (or configured explicitly from Emacs)
 - optional local CSS files if you want custom preview styling such as GitHub-style Markdown CSS
 - optional local Mermaid runtime if you want live Mermaid diagram rendering in preview
 - for Markdown source-side sync: Emacs `treesit` support with the `markdown` grammar available
@@ -132,7 +132,11 @@ If Emacs cannot find the right Pandoc binary through `PATH`, set it explicitly:
 ```
 
 Beacon Preview uses `pandoc server` for preview builds, so your Pandoc binary
-must include the `+server` feature:
+must be version 3.0 or newer and include the `+server` feature. You can verify
+this with `pandoc --version` — the `Features:` line should list `+server`.
+Some Linux distribution packages ship Pandoc without `+server`; in that case
+install an official release from
+[pandoc.org/installing](https://pandoc.org/installing.html):
 
 ```elisp
 (setq beacon-preview-pandoc-server-port 3030)
