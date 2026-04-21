@@ -38,7 +38,14 @@ jobs:
           rm -f parser.o scanner.o
 
       - name: Install Pandoc
-        run: sudo apt-get update && sudo apt-get install -y pandoc
+        run: |
+          # The apt `pandoc' package is not built with the +server feature
+          # that beacon-preview depends on, so fetch an upstream release.
+          PANDOC_VERSION=3.5
+          curl -L -o /tmp/pandoc.deb \
+            "https://github.com/jgm/pandoc/releases/download/${PANDOC_VERSION}/pandoc-${PANDOC_VERSION}-1-amd64.deb"
+          sudo dpkg -i /tmp/pandoc.deb
+          pandoc --version | head -n 3
 
       - name: Byte-compile package
         run: emacs --batch -Q -L lisp -f batch-byte-compile lisp/beacon-preview.el

@@ -3582,6 +3582,20 @@ it is currently hidden behind another buffer."
            :sentinel #'beacon-preview--pandoc-server-sentinel))
     beacon-preview--pandoc-server-process))
 
+(defcustom beacon-preview-pandoc-server-startup-deadline 10.0
+  "Maximum seconds to wait for a managed `pandoc server' to become reachable."
+  :type 'number
+  :group 'beacon-preview-build)
+
+(defun beacon-preview--pandoc-server-startup-log ()
+  "Return recent output from the managed pandoc server's buffer, or nil."
+  (let ((buffer (get-buffer " *beacon-preview-pandoc-server*")))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (let ((text (buffer-substring-no-properties (point-min) (point-max))))
+          (unless (string-empty-p (string-trim text))
+            text))))))
+
 (defun beacon-preview--ensure-pandoc-server ()
   "Ensure a reachable pandoc server is available or signal a user error."
   (unless (beacon-preview--pandoc-server-live-p)
@@ -3591,13 +3605,17 @@ it is currently hidden behind another buffer."
     (unless (and beacon-preview--pandoc-server-process
                  (process-live-p beacon-preview--pandoc-server-process))
       (beacon-preview--start-pandoc-server))
-    (let ((deadline (+ (float-time) 2.0)))
+    (let ((deadline (+ (float-time)
+                       beacon-preview-pandoc-server-startup-deadline)))
       (while (and (< (float-time) deadline)
+                  (process-live-p beacon-preview--pandoc-server-process)
                   (not (beacon-preview--pandoc-server-live-p)))
-        (accept-process-output beacon-preview--pandoc-server-process 0.05)))
+        (accept-process-output beacon-preview--pandoc-server-process 0.1)))
     (unless (beacon-preview--pandoc-server-live-p)
-      (user-error "Failed to start pandoc server at %s"
-                  (beacon-preview--pandoc-server-url "/")))))
+      (let ((log (beacon-preview--pandoc-server-startup-log)))
+        (user-error "Failed to start pandoc server at %s%s"
+                    (beacon-preview--pandoc-server-url "/")
+                    (if log (format ": %s" (string-trim log)) ""))))))
 
 (defun beacon-preview--buffer-file-string (file)
   "Return FILE contents as a UTF-8 string."
