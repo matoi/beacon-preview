@@ -28,7 +28,7 @@ Without these, `beacon-preview` will not work:
 
 You only need the piece that matches the source you edit:
 
-- editing Markdown: Emacs `treesit` support with the `markdown` grammar available (source-side block detection relies on tree-sitter Markdown)
+- editing Markdown: Emacs `treesit` support with the `markdown` grammar available. Source-side block detection relies on tree-sitter Markdown, so use a library build that includes the fix from [emacs-tree-sitter/tree-sitter-langs#1449](https://github.com/emacs-tree-sitter/tree-sitter-langs/issues/1449).
 - editing Org: `org-element` support (shipped with Emacs)
 
 ### Optional
@@ -37,10 +37,6 @@ These are not required, but unlock extra features:
 
 - local CSS files for custom preview styling such as GitHub-style Markdown CSS
 - a local Mermaid runtime for live Mermaid diagram rendering in preview
-
-For Markdown source-side sync, use tree-sitter Markdown library builds that
-include the fix from
-[emacs-tree-sitter/tree-sitter-langs#1449](https://github.com/emacs-tree-sitter/tree-sitter-langs/issues/1449).
 
 ## Installation
 
