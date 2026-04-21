@@ -1639,84 +1639,19 @@ LineTerminators) must be escaped so they cannot terminate the literal."
           (kill-buffer (get-file-buffer source-file))))
       (delete-directory tmp-root t))))
 
-(ert-deftest beacon-preview-build-current-file-passes-pandoc-command ()
-  (let* ((tmp-root (make-temp-file "beacon-preview-ert-" t))
-         (source-file (expand-file-name "sample.md" tmp-root))
-         (beacon-preview-pandoc-command "/custom/bin/pandoc")
-         (beacon-preview-temporary-root (expand-file-name "preview-root" tmp-root))
-         (captured-args nil))
-    (unwind-protect
-        (progn
-          (with-temp-file source-file
-            (insert "# Title\n"))
-          (find-file source-file)
-          (setq-local major-mode 'markdown-mode)
-          (cl-letf (((symbol-function 'call-process)
-                     (lambda (_program _infile destination _display &rest args)
-                       (setq captured-args args)
-                       (with-current-buffer (get-buffer-create destination)
-                         (erase-buffer))
-                       (let ((html-path (plist-get (beacon-preview--artifact-paths) :html)))
-                         (make-directory (file-name-directory html-path) t)
-                         (with-temp-file html-path
-                           (insert "<html><body><h1>Title</h1></body></html>")))
-                       0))
-                    ((symbol-function 'beacon-preview--command-available-p)
-                     (lambda (_command) t))
-                    ((symbol-function 'beacon-preview--postprocess-preview-html-file)
-                     (lambda (_file &optional _prefix)
-                       (setq beacon-preview--manifest '((dummy . t)))
-                       (setq beacon-preview--preview-html-cache
-                             '(:ordered (((dummy . t))) :by-kind nil)))))
-            (beacon-preview-build-current-file)
-            (should (equal (car captured-args) "-f"))
-            (should (member "gfm" captured-args))
-            (should (member "-s" captured-args))
-            (should (member "-o" captured-args)))
-          (kill-buffer (current-buffer)))
-      (ignore-errors
-        (when (get-file-buffer source-file)
-          (kill-buffer (get-file-buffer source-file))))
-      (delete-directory tmp-root t))))
-
-(ert-deftest beacon-preview-build-args-omit-css-when-unconfigured ()
-  (with-temp-buffer
-    (setq-local buffer-file-name "/tmp/sample.md")
-    (setq-local major-mode 'markdown-mode)
-    (let ((beacon-preview-pandoc-css-files nil))
-      (cl-letf (((symbol-function 'beacon-preview--command-available-p)
-                 (lambda (_command) t))
-                ((symbol-function 'beacon-preview--prepare-build-source)
-                 (lambda ()
-                   (list :input-file "/tmp/input.md"
-                         :output-dir temporary-file-directory
-                         :default-directory temporary-file-directory)))
-                ((symbol-function 'beacon-preview--artifact-paths)
-                 (lambda ()
-                   (list :html (expand-file-name "out.html" temporary-file-directory)))))
-        (should-not (member "--css"
-                            (plist-get (beacon-preview--build-args) :args)))))))
-
 (ert-deftest beacon-preview-build-args-include-one-css-file ()
   (let ((css-file (make-temp-file "beacon-preview-css-" nil ".css")))
     (unwind-protect
         (with-temp-buffer
           (setq-local buffer-file-name "/tmp/sample.md")
           (setq-local major-mode 'markdown-mode)
-          (let ((beacon-preview-pandoc-css-files (list css-file)))
-            (cl-letf (((symbol-function 'beacon-preview--command-available-p)
-                       (lambda (_command) t))
-                      ((symbol-function 'beacon-preview--prepare-build-source)
-                       (lambda ()
-                         (list :input-file "/tmp/input.md"
-                               :output-dir temporary-file-directory
-                               :default-directory temporary-file-directory)))
-                      ((symbol-function 'beacon-preview--artifact-paths)
-                       (lambda ()
-                         (list :html (expand-file-name "out.html" temporary-file-directory)))))
-              (let ((args (plist-get (beacon-preview--build-args) :args)))
-                (should (member "--css" args))
-                (should (member (expand-file-name css-file) args))))))
+          (let ((beacon-preview-pandoc-css-files (list css-file))
+                (config nil))
+            (setq config (beacon-preview--current-build-config))
+            (should (string-match-p
+                     (regexp-quote (beacon-preview--file-url
+                                    (expand-file-name css-file)))
+                     (beacon-preview--render-css-link-tags config)))))
       (delete-file css-file))))
 
 (ert-deftest beacon-preview-build-args-include-multiple-css-files-and-skip-missing-ones ()
@@ -1727,25 +1662,18 @@ LineTerminators) must be escaped so they cannot terminate the literal."
         (with-temp-buffer
           (setq-local buffer-file-name "/tmp/sample.md")
           (setq-local major-mode 'markdown-mode)
-          (let ((beacon-preview-pandoc-css-files (list css-a missing css-b)))
-            (cl-letf (((symbol-function 'beacon-preview--command-available-p)
-                       (lambda (_command) t))
-                      ((symbol-function 'beacon-preview--prepare-build-source)
-                       (lambda ()
-                         (list :input-file "/tmp/input.md"
-                               :output-dir temporary-file-directory
-                               :default-directory temporary-file-directory)))
-                      ((symbol-function 'beacon-preview--artifact-paths)
-                       (lambda ()
-                         (list :html (expand-file-name "out.html" temporary-file-directory)))))
-              (let ((args (plist-get (beacon-preview--build-args) :args)))
-                (should (= (length (seq-filter (lambda (arg)
-                                                 (string= arg "--css"))
-                                               args))
-                           2))
-                (should (member (expand-file-name css-a) args))
-                (should (member (expand-file-name css-b) args))
-                (should-not (member missing args))))))
+          (let* ((beacon-preview-pandoc-css-files (list css-a missing css-b))
+                 (config (beacon-preview--current-build-config))
+                 (html (beacon-preview--render-css-link-tags config)))
+            (should (string-match-p
+                     (regexp-quote (beacon-preview--file-url
+                                    (expand-file-name css-a)))
+                     html))
+            (should (string-match-p
+                     (regexp-quote (beacon-preview--file-url
+                                    (expand-file-name css-b)))
+                     html))
+            (should-not (string-match-p (regexp-quote missing) html))))
       (delete-file css-a)
       (delete-file css-b))))
 
@@ -1758,19 +1686,11 @@ LineTerminators) must be escaped so they cannot terminate the literal."
       (let ((beacon-preview-pandoc-css-files (list missing)))
         (cl-letf (((symbol-function 'beacon-preview--command-available-p)
                    (lambda (_command) t))
-                  ((symbol-function 'beacon-preview--prepare-build-source)
-                   (lambda ()
-                     (list :input-file "/tmp/input.md"
-                           :output-dir temporary-file-directory
-                           :default-directory temporary-file-directory)))
-                  ((symbol-function 'beacon-preview--artifact-paths)
-                   (lambda ()
-                     (list :html (expand-file-name "out.html" temporary-file-directory))))
                   ((symbol-function 'message)
                    (lambda (format-string &rest args)
                      (setq captured-message (apply #'format format-string args)))))
-          (should-not (member "--css"
-                              (plist-get (beacon-preview--build-args) :args)))
+          (should-not (beacon-preview--render-css-link-tags
+                       (beacon-preview--current-build-config)))
           (should (string-match-p "CSS file not found" captured-message)))))))
 
 (ert-deftest beacon-preview-build-args-use-major-mode-default-css-file ()
@@ -1783,23 +1703,16 @@ LineTerminators) must be escaped so they cannot terminate the literal."
                  '((markdown :pandoc-css-files ("/tmp/source-kind.css"))))
                 (beacon-preview-build-settings-by-major-mode
                  `((gfm-mode :pandoc-css-files (,css-file)))))
-            (cl-letf (((symbol-function 'beacon-preview--command-available-p)
-                       (lambda (_command) t))
-                      ((symbol-function 'beacon-preview--prepare-build-source)
-                       (lambda ()
-                         (list :input-file "/tmp/input.md"
-                               :output-dir temporary-file-directory
-                               :default-directory temporary-file-directory)))
-                      ((symbol-function 'beacon-preview--artifact-paths)
-                       (lambda ()
-                         (list :html (expand-file-name "out.html" temporary-file-directory)))))
-              (let ((args (plist-get (beacon-preview--build-args) :args)))
-                (should (member "--css" args))
-                (should (member (expand-file-name css-file) args))
-                (should-not (member "/tmp/source-kind.css" args))))))
+            (let ((html (beacon-preview--render-css-link-tags
+                         (beacon-preview--current-build-config))))
+              (should (string-match-p
+                       (regexp-quote (beacon-preview--file-url
+                                      (expand-file-name css-file)))
+                       html))
+              (should-not (string-match-p "/tmp/source-kind.css" html)))))
       (delete-file css-file))))
 
-(ert-deftest beacon-preview-build-args-respect-buffer-local-build-settings ()
+(ert-deftest beacon-preview-build-settings-respect-buffer-local-values ()
   (let ((css-file (make-temp-file "beacon-preview-css-" nil ".css"))
         (template-file (make-temp-file "beacon-preview-template-" nil ".html"))
         (mermaid-file (make-temp-file "beacon-preview-mermaid-" nil ".js")))
@@ -1811,39 +1724,35 @@ LineTerminators) must be escaped so they cannot terminate the literal."
           (setq-local beacon-preview-pandoc-template-file template-file)
           (setq-local beacon-preview-mermaid-script-file mermaid-file)
           (setq-local beacon-preview-body-wrapper-class "markdown-body")
-          (cl-letf (((symbol-function 'beacon-preview--command-available-p)
-                     (lambda (_command) t))
-                    ((symbol-function 'beacon-preview--prepare-build-source)
-                     (lambda ()
-                       (list :input-file "/tmp/input.md"
-                             :output-dir temporary-file-directory
-                             :default-directory temporary-file-directory)))
-                    ((symbol-function 'beacon-preview--artifact-paths)
-                     (lambda ()
-                       (list :html (expand-file-name "out.html" temporary-file-directory)))))
-            (let ((args (plist-get (beacon-preview--build-args) :args)))
-              (should (member "--template" args))
-              (should (member (expand-file-name template-file) args))
-              (should (member "--css" args))
-              (should (member (expand-file-name css-file) args)))
-            (let ((html-file (make-temp-file "beacon-preview-html-" nil ".html")))
-              (unwind-protect
-                  (progn
-                    (with-temp-file html-file
-                      (insert
-                       "<html><body><pre class=\"mermaid\"><code>graph TD\nA--&gt;B\n</code></pre></body></html>"))
-                    (let ((output (progn
-                                    (beacon-preview--postprocess-preview-html-file html-file)
-                                    (with-temp-buffer
-                                      (insert-file-contents html-file)
-                                      (buffer-string)))))
-                      (should (string-match-p "<article class=\"markdown-body\">" output))
-                      (should (string-match-p
-                               (regexp-quote
-                                (format "<script src=\"%s\"></script>"
-                                        (concat "file://" mermaid-file)))
-                               output))))
-                (delete-file html-file)))))
+          (let ((config (beacon-preview--current-build-config)))
+            (should (equal (plist-get config :pandoc-template-file)
+                           template-file))
+            (should (equal (plist-get config :pandoc-css-files)
+                           (list css-file))))
+          (let ((html-file (make-temp-file "beacon-preview-html-" nil ".html")))
+            (unwind-protect
+                (progn
+                  (with-temp-file html-file
+                    (insert
+                     "<html><body><pre class=\"mermaid\"><code>graph TD\nA--&gt;B\n</code></pre></body></html>"))
+                  (let ((output (progn
+                                  (beacon-preview--postprocess-preview-html-file html-file)
+                                  (with-temp-buffer
+                                    (insert-file-contents html-file)
+                                    (buffer-string)))))
+                    (should (string-match-p
+                             (regexp-quote
+                              (format "<link rel=\"stylesheet\" href=\"%s\" />"
+                                      (beacon-preview--file-url
+                                       (expand-file-name css-file))))
+                             output))
+                    (should (string-match-p "<article class=\"markdown-body\">" output))
+                    (should (string-match-p
+                             (regexp-quote
+                              (format "<script src=\"%s\"></script>"
+                                      (concat "file://" mermaid-file)))
+                             output))))
+              (delete-file html-file))))
       (delete-file css-file)
       (delete-file template-file)
       (delete-file mermaid-file))))
@@ -1968,36 +1877,135 @@ LineTerminators) must be escaped so they cannot terminate the literal."
                        '("/tmp/global.css")))))))
 
 (ert-deftest beacon-preview-build-current-file-passes-org-input-format ()
+  (beacon-preview-test--assert-markdown-smoke-prereqs)
   (let* ((tmp-root (make-temp-file "beacon-preview-ert-" t))
          (source-file (expand-file-name "sample.org" tmp-root))
-         (beacon-preview-temporary-root (expand-file-name "preview-root" tmp-root))
-         (captured-args nil))
+         (beacon-preview-temporary-root (expand-file-name "preview-root" tmp-root)))
     (unwind-protect
         (progn
           (with-temp-file source-file
-            (insert "* Title\n"))
+            (insert "* Org Title\n\nBody paragraph.\n"))
           (find-file source-file)
           (setq-local major-mode 'org-mode)
-          (cl-letf (((symbol-function 'call-process)
-                     (lambda (_program _infile destination _display &rest args)
-                       (setq captured-args args)
-                       (with-current-buffer (get-buffer-create destination)
-                         (erase-buffer))
-                       (let ((html-path (plist-get (beacon-preview--artifact-paths) :html)))
-                         (make-directory (file-name-directory html-path) t)
-                         (with-temp-file html-path
-                           (insert "<html><body><h1>Title</h1></body></html>")))
-                       0))
-                    ((symbol-function 'beacon-preview--command-available-p)
-                     (lambda (_command) t))
-                    ((symbol-function 'beacon-preview--postprocess-preview-html-file)
-                     (lambda (_file &optional _prefix)
-                       (setq beacon-preview--manifest '((dummy . t)))
-                       (setq beacon-preview--preview-html-cache
-                             '(:ordered (((dummy . t))) :by-kind nil)))))
-            (beacon-preview-build-current-file)
-            (should (equal (car captured-args) "-f"))
-            (should (member "org" captured-args)))
+          (let* ((artifacts (beacon-preview-build-current-file))
+                 (html-path (plist-get artifacts :html))
+                 (html (with-temp-buffer
+                         (insert-file-contents html-path)
+                         (buffer-string))))
+            (should (file-exists-p html-path))
+            ;; Pandoc's Org reader emits an <h1> for a top-level headline; the
+            ;; Markdown reader would emit it for a `#` line, so the fact that
+            ;; `Org Title' appears as <h1> (and the body is rendered as a
+            ;; paragraph) confirms the Org input format was selected.
+            (should (string-match-p "<h1[^>]*>Org Title" html))
+            (should (string-match-p "<p[^>]*>Body paragraph\\." html)))
+          (kill-buffer (current-buffer)))
+      (ignore-errors
+        (when (get-file-buffer source-file)
+          (kill-buffer (get-file-buffer source-file))))
+      (delete-directory tmp-root t))))
+
+(ert-deftest beacon-preview-build-current-file-handles-multibyte-source ()
+  "Multibyte source text must reach `pandoc server' without breaking the HTTP
+request body or the decoded HTML output."
+  (beacon-preview-test--assert-markdown-smoke-prereqs)
+  (let* ((tmp-root (make-temp-file "beacon-preview-ert-" t))
+         (source-file (expand-file-name "sample.md" tmp-root))
+         (beacon-preview-temporary-root (expand-file-name "preview-root" tmp-root)))
+    (unwind-protect
+        (progn
+          (with-temp-file source-file
+            (insert
+             "# 状態モデル\n\n"
+             "日本語の段落です。\n\n"
+             "```c\n"
+             "/* コメント */\n"
+             "```\n"))
+          (find-file source-file)
+          (setq-local major-mode 'markdown-mode)
+          (let* ((artifacts (beacon-preview-build-current-file))
+                 (html-path (plist-get artifacts :html))
+                 (html (with-temp-buffer
+                         (insert-file-contents html-path)
+                         (buffer-string))))
+            (should (file-exists-p html-path))
+            (should (string-match-p "状態モデル" html))
+            (should (string-match-p "日本語の段落です" html))
+            (should (string-match-p "コメント" html)))
+          (kill-buffer (current-buffer)))
+      (ignore-errors
+        (when (get-file-buffer source-file)
+          (kill-buffer (get-file-buffer source-file))))
+      (delete-directory tmp-root t))))
+
+(ert-deftest beacon-preview-pandoc-server-request-includes-template-and-css-vars ()
+  (let ((css-file (make-temp-file "beacon-preview-css-" nil ".css"))
+        (template-file (make-temp-file "beacon-preview-template-" nil ".html")))
+    (unwind-protect
+        (with-temp-buffer
+          (insert "# Title\n")
+          (setq-local buffer-file-name "/tmp/sample.md")
+          (setq-local major-mode 'markdown-mode)
+          (setq-local beacon-preview-pandoc-css-files (list css-file))
+          (setq-local beacon-preview-pandoc-template-file template-file)
+          (cl-letf (((symbol-function 'beacon-preview--ensure-pandoc-server)
+                     (lambda () t))
+                    ((symbol-function 'beacon-preview--validate-build-prerequisites)
+                     (lambda () t))
+                    ((symbol-function 'beacon-preview--prepare-build-source)
+                     (lambda ()
+                       (with-temp-file "/tmp/input.md"
+                         (insert "# Title\n"))
+                       (list :input-file "/tmp/input.md"
+                             :output-dir temporary-file-directory
+                             :default-directory temporary-file-directory)))
+                    ((symbol-function 'beacon-preview--artifact-paths)
+                     (lambda ()
+                       (list :html (expand-file-name "out.html" temporary-file-directory)))))
+            (let* ((request (beacon-preview--pandoc-server-request))
+                   (payload (plist-get request :payload))
+                   (variables (alist-get "variables" payload nil nil #'string=))
+                   (css (alist-get "css" variables nil nil #'string=)))
+              (should (equal (alist-get "from" payload nil nil #'string=) "gfm"))
+              (should (equal (alist-get "to" payload nil nil #'string=) "html"))
+              (should (eq (alist-get "standalone" payload nil nil #'string=) t))
+              (should (string= (alist-get "template" payload nil nil #'string=)
+                               (with-temp-buffer
+                                 (insert-file-contents template-file)
+                                 (buffer-string))))
+              (should (equal (append css nil)
+                             (list (beacon-preview--file-url
+                                    (expand-file-name css-file))))))))
+      (delete-file css-file)
+      (delete-file template-file)
+      (ignore-errors (delete-file "/tmp/input.md")))))
+
+(ert-deftest beacon-preview-build-current-file-uses-pandoc-server-backend ()
+  "Real build must go through `pandoc server' (an HTTP request, not a
+`call-process' invocation) so repeat builds reuse the same server process."
+  (beacon-preview-test--assert-markdown-smoke-prereqs)
+  (let* ((tmp-root (make-temp-file "beacon-preview-ert-" t))
+         (source-file (expand-file-name "sample.md" tmp-root))
+         (beacon-preview-temporary-root (expand-file-name "preview-root" tmp-root))
+         (call-process-calls 0))
+    (unwind-protect
+        (progn
+          (with-temp-file source-file
+            (insert "# Title\n"))
+          (find-file source-file)
+          (setq-local major-mode 'markdown-mode)
+          (cl-letf* ((original-call-process (symbol-function 'call-process))
+                     ((symbol-function 'call-process)
+                      (lambda (program &rest args)
+                        ;; Only count Pandoc document conversions; allow
+                        ;; unrelated helpers (e.g. availability checks) through.
+                        (when (string-match-p "pandoc" program)
+                          (cl-incf call-process-calls))
+                        (apply original-call-process program args))))
+            (let ((artifacts (beacon-preview-build-current-file)))
+              (should (file-exists-p (plist-get artifacts :html)))))
+          (should (zerop call-process-calls))
+          (should (beacon-preview--pandoc-server-live-p))
           (kill-buffer (current-buffer)))
       (ignore-errors
         (when (get-file-buffer source-file)
@@ -2026,6 +2034,9 @@ LineTerminators) must be escaped so they cannot terminate the literal."
        :type 'user-error))))
 
 (ert-deftest beacon-preview-build-current-file-surfaces-builder-output ()
+  "When `pandoc server' rejects the input, the build command surfaces the
+server-reported error as a `user-error' rather than silently producing HTML."
+  (beacon-preview-test--assert-markdown-smoke-prereqs)
   (let* ((tmp-root (make-temp-file "beacon-preview-ert-" t))
          (source-file (expand-file-name "sample.md" tmp-root))
          (beacon-preview-temporary-root (expand-file-name "preview-root" tmp-root)))
@@ -2035,16 +2046,13 @@ LineTerminators) must be escaped so they cannot terminate the literal."
             (insert "# Title\n"))
           (find-file source-file)
           (setq-local major-mode 'markdown-mode)
-          (cl-letf (((symbol-function 'beacon-preview--command-available-p)
-                     (lambda (_command) t))
-                    ((symbol-function 'pop-to-buffer)
-                     (lambda (&rest _args) nil))
-                    ((symbol-function 'call-process)
-                     (lambda (_program _infile destination _display &rest _args)
-                       (with-current-buffer (get-buffer-create destination)
-                         (erase-buffer)
-                         (insert "pandoc failed with exit status 1\n"))
-                       1)))
+          ;; Force pandoc to fail by asking it to read an input format it does
+          ;; not recognize.  The server must respond with a non-2xx status and
+          ;; the command must turn that into a user-error.
+          (setq-local beacon-preview-build-settings
+                      '(:pandoc-input-format-override "no-such-format"))
+          (cl-letf (((symbol-function 'beacon-preview--pandoc-input-format)
+                     (lambda () "no-such-format")))
             (should-error
              (beacon-preview-build-current-file)
              :type 'user-error)))

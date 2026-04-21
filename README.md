@@ -6,7 +6,9 @@ makes generated HTML easy to navigate from Emacs.
 It focuses on:
 
 - generating local HTML artifacts with Pandoc
+- applying optional preview CSS files from Pandoc build settings
 - adding beacon markers to headings and block-level elements
+- supporting Mermaid diagrams via an optional local runtime script
 - resolving source-side blocks structurally instead of by line-by-line fallback scans
 - opening the result in Emacs xwidget
 - jumping or flashing the preview at useful locations from the source buffer
@@ -19,6 +21,8 @@ It focuses on:
 - Emacs built with libxml support
 - a graphical Emacs session
 - Pandoc installed and available in `PATH`, or configured explicitly from Emacs
+- optional local CSS files if you want custom preview styling such as GitHub-style Markdown CSS
+- optional local Mermaid runtime if you want live Mermaid diagram rendering in preview
 - for Markdown source-side sync: Emacs `treesit` support with the `markdown` grammar available
 - for Org source-side sync: `org-element` support
 
@@ -127,6 +131,13 @@ If Emacs cannot find the right Pandoc binary through `PATH`, set it explicitly:
 (setq beacon-preview-pandoc-command "/opt/homebrew/bin/pandoc")
 ```
 
+Beacon Preview uses `pandoc server` for preview builds, so your Pandoc binary
+must include the `+server` feature:
+
+```elisp
+(setq beacon-preview-pandoc-server-port 3030)
+```
+
 Optional styling/runtime enhancements can be layered on without changing the
 basic preview pipeline:
 
@@ -140,7 +151,7 @@ basic preview pipeline:
 
 These settings are all optional:
 
-- `beacon-preview-pandoc-css-files` appends `--css` arguments for existing CSS files
+- `beacon-preview-pandoc-css-files` injects stylesheet links for existing CSS files
 - `beacon-preview-body-wrapper-class` wraps preview body content in one
   `article` element so wrapper-scoped CSS can apply cleanly
 - `beacon-preview-mermaid-script-file` injects a local Mermaid runtime when present
@@ -308,7 +319,7 @@ When `beacon-preview-mode` is enabled, saving the buffer rebuilds preview
 artifacts and refreshes the tracked preview automatically. Builds run
 asynchronously, so Emacs stays responsive during Pandoc invocation. If a
 new save arrives while a build is still running, the in-flight build is
-superseded.
+superseded. Preview builds use a persistent `pandoc server` backend.
 
 When a build takes longer than `beacon-preview-slow-build-message-threshold`
 (default 0.5 seconds), the elapsed time is shown in the echo area.

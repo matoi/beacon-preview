@@ -27,6 +27,7 @@
 (require 'cl-lib)
 (require 'dom)
 (require 'json)
+(require 'url)
 (require 'xml)
 (require 'org-element)
 (require 'url-util)
@@ -37,8 +38,11 @@
 (declare-function xwidget-webkit-execute-script "xwidget")
 (declare-function xwidget-webkit-callback "xwidget")
 (declare-function xwidget-webkit-uri "xwidget")
+(declare-function url-retrieve "url")
+(declare-function url-retrieve-synchronously "url")
 
 (defvar xwidget-webkit-last-session)
+(defvar url-http-end-of-headers)
 (defvar beacon-preview-mode)
 (defvar beacon-preview-behavior-style)
 (defvar beacon-preview-flash-style)
@@ -104,6 +108,26 @@ dedicated preview frame for all source buffers."
 (defcustom beacon-preview-pandoc-command "pandoc"
   "Pandoc executable used to render preview HTML."
   :type 'string
+  :group 'beacon-preview-build)
+
+(defcustom beacon-preview-pandoc-server-host "127.0.0.1"
+  "Host used for `pandoc server' requests."
+  :type 'string
+  :group 'beacon-preview-build)
+
+(defcustom beacon-preview-pandoc-server-port 3030
+  "Port used for `pandoc server' requests."
+  :type 'integer
+  :group 'beacon-preview-build)
+
+(defcustom beacon-preview-pandoc-server-timeout 2
+  "Timeout in seconds used when starting `pandoc server'."
+  :type 'integer
+  :group 'beacon-preview-build)
+
+(defcustom beacon-preview-pandoc-server-auto-start t
+  "Whether beacon preview should start `pandoc server' on demand."
+  :type 'boolean
   :group 'beacon-preview-build)
 
 (defun beacon-preview--string-list-p (value)
@@ -190,8 +214,8 @@ existing file, the build passes `--template' to Pandoc."
 (defcustom beacon-preview-pandoc-css-files nil
   "Optional CSS files to include in preview HTML builds.
 
-Each existing file is passed to Pandoc via a `--css' argument.  Missing files
-are ignored so CSS enhancements remain optional."
+Each existing file is injected as a stylesheet link in the generated preview
+HTML.  Missing files are ignored so CSS enhancements remain optional."
   :type '(repeat file)
   :group 'beacon-preview-build)
 (put 'beacon-preview-pandoc-css-files 'safe-local-variable
@@ -920,8 +944,8 @@ Set to nil to disable interception and let the xwidget follow links normally."
 (defvar-local beacon-preview--edited-positions nil
   "Recently edited source positions collected since the last save/revert.")
 
-(defvar-local beacon-preview--build-process nil
-  "Active async build process for this source buffer.")
+(defvar-local beacon-preview--build-request-buffer nil
+  "Active async HTTP retrieval buffer for this source buffer.")
 
 (defvar-local beacon-preview--ephemeral-source-id nil
   "Stable per-buffer identifier used for unvisited preview artifacts.")
@@ -938,6 +962,9 @@ Set to nil to disable interception and let the xwidget follow links normally."
 
 (defvar-local beacon-preview--org-element-cache-tick nil
   "Buffer modification tick used to validate `beacon-preview--org-element-cache'.")
+
+(defvar beacon-preview--pandoc-server-process nil
+  "Process object for the internally managed `pandoc server', if any.")
 
 (defvar beacon-preview-command-map
   (let ((map (make-sparse-keymap)))
@@ -1492,6 +1519,11 @@ block, including the opening and closing fence lines."
     (unless (string-empty-p text)
       text)))
 
+(defun beacon-preview--html-heading-tag-p (tag)
+  "Return non-nil when TAG is an HTML heading tag."
+  (and (stringp tag)
+       (string-match-p "\\`h[1-6]\\'" tag)))
+
 (defun beacon-preview--html-entry (node tag generated-index prefix)
   "Return a preview cache entry for HTML NODE.
 
@@ -1513,8 +1545,9 @@ PREFIX is the anchor prefix."
       (dom-set-attribute node 'id anchor))
     (dom-set-attribute node 'data-beacon-kind effective-kind)
     (dom-set-attribute node 'data-beacon-index (number-to-string effective-index))
-    (when-let ((text (beacon-preview--html-entry-text node)))
-      (setq entry (append entry `((text . ,text)))))
+    (when-let ((text (and (beacon-preview--html-heading-tag-p effective-kind)
+                          (beacon-preview--html-entry-text node))))
+      (setcdr (last entry) `((text . ,text))))
     entry))
 
 (defun beacon-preview--html-cache-by-kind (entries)
@@ -1523,7 +1556,11 @@ PREFIX is the anchor prefix."
     (dolist (entry entries)
       (let* ((kind (alist-get 'kind entry))
              (bucket (gethash kind table nil)))
-        (puthash kind (append bucket (list entry)) table)))
+        (puthash kind (cons entry bucket) table)))
+    (maphash
+     (lambda (kind bucket)
+       (puthash kind (nreverse bucket) table))
+     table)
     table))
 
 (defun beacon-preview--effective-flash-spec ()
@@ -1945,6 +1982,19 @@ buffer-local values even while it uses temporary buffers internally."
                  script-file)
         nil))))
 
+(defun beacon-preview--render-css-link-tags (config)
+  "Return optional CSS link tags for CONFIG, or nil when none are available."
+  (let ((links nil))
+    (dolist (path (plist-get config :pandoc-css-files))
+      (if (file-exists-p path)
+          (push (format "<link rel=\"stylesheet\" href=\"%s\" />"
+                        (beacon-preview--file-url
+                         (expand-file-name path)))
+                links)
+        (message "[beacon-preview] CSS file not found: %s" path)))
+    (when links
+      (mapconcat #'identity (nreverse links) "\n"))))
+
 (defun beacon-preview--instrument-html-dom (dom prefix config)
   "Instrument HTML DOM with preview beacons using PREFIX.
 
@@ -1974,7 +2024,7 @@ Return a plist containing `:html' and `:entries'."
                         (entry (beacon-preview--html-entry
                                 node tag generated-index prefix)))
                    (puthash tag generated-index counters)
-                   (setq entries (append entries (list entry)))
+                   (push entry entries)
                    (when is-container
                      (setq child-depth (1+ container-depth)))))
                (dolist (child (dom-children node))
@@ -1982,7 +2032,7 @@ Return a plist containing `:html' and `:entries'."
       (walk dom 0))
     (beacon-preview--normalize-mermaid-blocks dom)
     (list :html (beacon-preview--serialize-html-dom dom)
-          :entries entries)))
+          :entries (nreverse entries))))
 
 (defun beacon-preview--postprocess-preview-html-file (html-path &optional prefix)
   "Rewrite HTML-PATH with preview beacons and return cache metadata.
@@ -2003,6 +2053,10 @@ PREFIX defaults to `beacon'."
               (beacon-preview--instrument-html-dom dom prefix config))))
          (html (beacon-preview--restore-script-style-bodies
                 (plist-get result :html) restore-alist))
+         (html (if-let ((css-fragment
+                         (beacon-preview--render-css-link-tags config)))
+                   (beacon-preview--inject-into-head html css-fragment)
+                 html))
          (html (if-let ((mermaid-fragment
                          (beacon-preview--render-mermaid-script-tags config)))
                    (beacon-preview--inject-into-head html mermaid-fragment)
@@ -3484,46 +3538,197 @@ it is currently hidden behind another buffer."
   "Return PATHS filtered to existing filesystem entries."
   (seq-filter #'file-exists-p paths))
 
-(defun beacon-preview--pandoc-css-args (config)
-  "Return optional `--css' args for configured preview CSS files."
-  (let ((existing nil))
+(defun beacon-preview--pandoc-server-url (&optional endpoint)
+  "Return the URL for the pandoc server ENDPOINT."
+  (format "http://%s:%d%s"
+          beacon-preview-pandoc-server-host
+          beacon-preview-pandoc-server-port
+          (or endpoint "/")))
+
+(defun beacon-preview--pandoc-server-live-p ()
+  "Return non-nil when the configured pandoc server responds to `/version'."
+  (condition-case nil
+      (let ((url-request-method "GET")
+            (buffer (url-retrieve-synchronously
+                     (beacon-preview--pandoc-server-url "/version")
+                     t t 0.2)))
+        (when (buffer-live-p buffer)
+          (with-current-buffer buffer
+            (goto-char (point-min))
+            (prog1
+                (re-search-forward "^HTTP/[0-9.]+ 200 " nil t)
+              (kill-buffer buffer)))))
+    (error nil)))
+
+(defun beacon-preview--pandoc-server-sentinel (process _event)
+  "Forget PROCESS when the managed pandoc server exits."
+  (unless (process-live-p process)
+    (when (eq beacon-preview--pandoc-server-process process)
+      (setq beacon-preview--pandoc-server-process nil))))
+
+(defun beacon-preview--start-pandoc-server ()
+  "Start a managed `pandoc server' process."
+  (let ((buffer (get-buffer-create " *beacon-preview-pandoc-server*")))
+    (setq beacon-preview--pandoc-server-process
+          (make-process
+           :name "beacon-preview-pandoc-server"
+           :buffer buffer
+           :command (list beacon-preview-pandoc-command
+                          "server"
+                          (format "--port=%d" beacon-preview-pandoc-server-port)
+                          (format "--timeout=%d" beacon-preview-pandoc-server-timeout))
+           :noquery t
+           :connection-type 'pipe
+           :sentinel #'beacon-preview--pandoc-server-sentinel))
+    beacon-preview--pandoc-server-process))
+
+(defun beacon-preview--ensure-pandoc-server ()
+  "Ensure a reachable pandoc server is available or signal a user error."
+  (unless (beacon-preview--pandoc-server-live-p)
+    (unless beacon-preview-pandoc-server-auto-start
+      (user-error "Pandoc server is not reachable at %s"
+                  (beacon-preview--pandoc-server-url "/")))
+    (unless (and beacon-preview--pandoc-server-process
+                 (process-live-p beacon-preview--pandoc-server-process))
+      (beacon-preview--start-pandoc-server))
+    (let ((deadline (+ (float-time) 2.0)))
+      (while (and (< (float-time) deadline)
+                  (not (beacon-preview--pandoc-server-live-p)))
+        (accept-process-output beacon-preview--pandoc-server-process 0.05)))
+    (unless (beacon-preview--pandoc-server-live-p)
+      (user-error "Failed to start pandoc server at %s"
+                  (beacon-preview--pandoc-server-url "/")))))
+
+(defun beacon-preview--buffer-file-string (file)
+  "Return FILE contents as a UTF-8 string."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (buffer-string)))
+
+(defun beacon-preview--pandoc-server-template (config)
+  "Return template string for CONFIG, or nil if no usable template exists."
+  (when-let ((template-file (plist-get config :pandoc-template-file)))
+    (if (file-exists-p template-file)
+        (beacon-preview--buffer-file-string template-file)
+      (message "[beacon-preview] Pandoc template not found: %s" template-file)
+      nil)))
+
+(defun beacon-preview--pandoc-server-css-variables (config)
+  "Return a vector of CSS file URLs for CONFIG, or nil when none are usable."
+  (let ((urls nil))
     (dolist (path (plist-get config :pandoc-css-files))
       (if (file-exists-p path)
-          (setq existing (append existing (list (expand-file-name path))))
+          (setq urls
+                (append urls
+                        (list (beacon-preview--file-url
+                               (expand-file-name path)))))
         (message "[beacon-preview] CSS file not found: %s" path)))
-    (apply #'append
-           (mapcar (lambda (path)
-                     (list "--css" path))
-                   existing))))
+    (when urls
+      (vconcat urls))))
 
-(defun beacon-preview--build-args ()
-  "Return the argument list for the Pandoc build process.
-
-Also validates prerequisites and prepares the build source.  The returned
-plist includes `:program', `:args', `:html', and `:default-directory'."
+(defun beacon-preview--pandoc-server-request ()
+  "Return request metadata for a pandoc-server preview build."
   (beacon-preview--validate-build-prerequisites)
+  (beacon-preview--ensure-pandoc-server)
   (let* ((build-source (beacon-preview--prepare-build-source))
          (input-format (beacon-preview--pandoc-input-format))
          (config (beacon-preview--current-build-config))
          (source-file (plist-get build-source :input-file))
          (artifacts (beacon-preview--artifact-paths))
          (html-path (plist-get artifacts :html))
-         (output-dir (plist-get build-source :output-dir))
-         (args (append
-                (list "-f" input-format
-                      source-file
-                      "-s")
-                (when (and (plist-get config :pandoc-template-file)
-                           (file-exists-p (plist-get config :pandoc-template-file)))
-                  (list "--template"
-                        (expand-file-name (plist-get config :pandoc-template-file))))
-                (beacon-preview--pandoc-css-args config)
-                (list "-o" html-path))))
-    (make-directory output-dir t)
-    (list :program beacon-preview-pandoc-command
-          :args args
+         (template (beacon-preview--pandoc-server-template config))
+         (css-variables (beacon-preview--pandoc-server-css-variables config))
+         (payload `(("text" . ,(beacon-preview--buffer-file-string source-file))
+                    ("from" . ,input-format)
+                    ("to" . "html")
+                    ("standalone" . t)
+                    ,@(when template
+                        `(("template" . ,template)))
+                    ,@(when css-variables
+                        `(("variables" . (("css" . ,css-variables))))))))
+    (make-directory (plist-get build-source :output-dir) t)
+    (list :url (beacon-preview--pandoc-server-url "/")
+          :payload payload
           :html html-path
           :default-directory (plist-get build-source :default-directory))))
+
+(defun beacon-preview--http-response-body ()
+  "Return the current buffer's HTTP response body, decoded as UTF-8.
+
+`url-retrieve' response buffers are unibyte and keep the body as raw bytes.
+Decoding to a multibyte string ensures JSON parsing and later file writes
+handle non-ASCII output correctly."
+  (goto-char (point-min))
+  (let ((body-bytes
+         (if (re-search-forward "\r?\n\r?\n" nil t)
+             (buffer-substring-no-properties (point) (point-max))
+           (buffer-string))))
+    (decode-coding-string body-bytes 'utf-8)))
+
+(defun beacon-preview--encode-request-data (payload)
+  "Return PAYLOAD JSON-encoded as a unibyte UTF-8 byte string.
+
+`url-request-data' must not contain multibyte characters; encoding to UTF-8
+bytes is required whenever the payload (e.g. source text) includes non-ASCII
+content."
+  (encode-coding-string (json-encode payload) 'utf-8))
+
+(defun beacon-preview--write-build-output (output-buffer lines)
+  "Replace OUTPUT-BUFFER contents with LINES joined by newlines."
+  (with-current-buffer (get-buffer-create output-buffer)
+    (erase-buffer)
+    (insert (string-join (seq-remove #'string-empty-p lines) "\n"))))
+
+(defun beacon-preview--pandoc-server-handle-response (response-buffer html-path output-buffer)
+  "Decode RESPONSE-BUFFER and write HTML-PATH, or signal a `user-error'."
+  (unwind-protect
+      (with-current-buffer response-buffer
+        (let* ((status-line (progn
+                              (goto-char (point-min))
+                              (buffer-substring-no-properties
+                               (line-beginning-position)
+                               (line-end-position))))
+               (body (beacon-preview--http-response-body))
+               (payload (condition-case nil
+                            (json-parse-string
+                             body
+                             :object-type 'alist
+                             :array-type 'list)
+                          (json-parse-error
+                           nil)))
+               (messages (alist-get 'messages payload))
+               (output (or (alist-get 'output payload)
+                           (when (string-match-p "^HTTP/[0-9.]+ 200 " status-line)
+                             body)))
+               (error-message (alist-get 'error payload))
+               (base64 (eq t (alist-get 'base64 payload)))
+               (log-lines
+                (append
+                 (when (and status-line
+                            (not (string-empty-p status-line)))
+                   (list status-line))
+                 (mapcar
+                  (lambda (entry)
+                    (format "%s: %s"
+                            (alist-get 'verbosity entry)
+                            (alist-get 'message entry)))
+                  messages)
+                 (when error-message
+                   (list error-message)))))
+          (beacon-preview--write-build-output output-buffer log-lines)
+          (unless (and (stringp output)
+                       (not error-message)
+                       (string-match-p "^HTTP/[0-9.]+ 200 " status-line))
+            (user-error "%s" (beacon-preview--build-error-message output-buffer)))
+          (make-directory (file-name-directory html-path) t)
+          (with-temp-file html-path
+            (insert (if base64
+                        (decode-coding-string
+                         (base64-decode-string output)
+                         'utf-8)
+                      output)))))
+    (when (buffer-live-p response-buffer)
+      (kill-buffer response-buffer))))
 
 ;;;###autoload
 (defun beacon-preview-build-current-file ()
@@ -3531,22 +3736,23 @@ plist includes `:program', `:args', `:html', and `:default-directory'."
 
 Returns a plist with the final `:html' path."
   (interactive)
-  (let* ((build (beacon-preview--build-args))
+  (let* ((output-buffer "*beacon-preview-build*")
+         (build (beacon-preview--pandoc-server-request))
          (html-path (plist-get build :html))
          (default-directory (plist-get build :default-directory))
-         (output-buffer "*beacon-preview-build*")
-         (exit-code
-          (condition-case err
-              (apply #'call-process
-                     (plist-get build :program)
-                     nil output-buffer nil
-                     (plist-get build :args))
-            (file-missing
-             (user-error "Failed to start Pandoc: %s"
-                         (error-message-string err))))))
-    (unless (and (integerp exit-code) (zerop exit-code))
-      (pop-to-buffer output-buffer)
-      (user-error "%s" (beacon-preview--build-error-message output-buffer)))
+         (url-request-method "POST")
+         (url-request-extra-headers
+          '(("Content-Type" . "application/json")
+            ("Accept" . "application/json")))
+         (url-request-data
+          (beacon-preview--encode-request-data (plist-get build :payload)))
+         (response-buffer
+          (url-retrieve-synchronously (plist-get build :url) t t)))
+    (unless (buffer-live-p response-buffer)
+      (user-error "Failed to contact pandoc server at %s"
+                  (plist-get build :url)))
+    (beacon-preview--pandoc-server-handle-response
+     response-buffer html-path output-buffer)
     (setq beacon-preview--last-html-path html-path)
     (beacon-preview--postprocess-preview-html-file html-path)
     (setq beacon-preview--last-build-tick (buffer-chars-modified-tick))
@@ -3560,58 +3766,62 @@ Returns a plist with the final `:html' path."
 CALLBACK receives one argument: a plist with final `:html' path, or nil on
 failure.  Any previously running async build for this source buffer is killed
 first."
-  (let* ((build (beacon-preview--build-args))
-         (html-path (plist-get build :html))
-         (default-directory (plist-get build :default-directory))
-         (source-buffer (current-buffer))
+  (let* ((source-buffer (current-buffer))
          (output-buffer (generate-new-buffer " *beacon-preview-build-async*"))
          (start-time (current-time)))
-    ;; Kill any in-flight build for this source buffer.
-    (when (and beacon-preview--build-process
-               (process-live-p beacon-preview--build-process))
-      (delete-process beacon-preview--build-process))
-    (condition-case err
-        (let ((process
-               (apply #'start-process
-                      "beacon-preview-build"
-                      output-buffer
-                      (plist-get build :program)
-                      (plist-get build :args))))
-          (setq beacon-preview--build-process process)
-          (set-process-sentinel
-           process
-           (lambda (proc event)
-             (when (buffer-live-p source-buffer)
-               (with-current-buffer source-buffer
-                 (when (eq beacon-preview--build-process proc)
-                   (setq beacon-preview--build-process nil))))
-             (unwind-protect
-                 (cond
-                  ((not (eq (process-status proc) 'exit))
-                   (beacon-preview--debug "async build interrupted: %s"
-                                          (string-trim event))
-                   (funcall callback nil))
-                  ((not (zerop (process-exit-status proc)))
-                   (when (buffer-live-p source-buffer)
-                     (with-current-buffer source-buffer
-                       (message "[beacon-preview] build failed (exit %d)"
-                                (process-exit-status proc))))
-                   (funcall callback nil))
-                  (t
-                   (when (buffer-live-p source-buffer)
-                     (with-current-buffer source-buffer
-                       (setq beacon-preview--last-html-path html-path)
-                       (beacon-preview--postprocess-preview-html-file html-path)
-                       (setq beacon-preview--last-build-tick
-                             (buffer-chars-modified-tick))
-                       (beacon-preview--build-message-finish start-time)))
-                   (funcall callback (list :html html-path))))
-               (when (buffer-live-p output-buffer)
-                 (kill-buffer output-buffer))))))
-      (file-missing
-       (kill-buffer output-buffer)
-       (user-error "Failed to start Pandoc: %s"
-                   (error-message-string err))))))
+    (when (buffer-live-p beacon-preview--build-request-buffer)
+      (let ((request-process (get-buffer-process beacon-preview--build-request-buffer)))
+        (when (process-live-p request-process)
+          (delete-process request-process)))
+      (kill-buffer beacon-preview--build-request-buffer)
+      (setq beacon-preview--build-request-buffer nil))
+    (let* ((build (beacon-preview--pandoc-server-request))
+           (html-path (plist-get build :html))
+           (default-directory (plist-get build :default-directory))
+           (url-request-method "POST")
+           (url-request-extra-headers
+            '(("Content-Type" . "application/json")
+              ("Accept" . "application/json")))
+           (url-request-data
+          (beacon-preview--encode-request-data (plist-get build :payload)))
+           (request-buffer
+            (url-retrieve
+             (plist-get build :url)
+             (lambda (status)
+               (let ((response-buffer (current-buffer)))
+                 (when (buffer-live-p source-buffer)
+                   (with-current-buffer source-buffer
+                     (when (eq beacon-preview--build-request-buffer response-buffer)
+                       (setq beacon-preview--build-request-buffer nil))))
+                 (unwind-protect
+                     (cond
+                      ((plist-get status :error)
+                       (beacon-preview--write-build-output
+                        output-buffer
+                        (list (format "%s" (plist-get status :error))))
+                       (funcall callback nil))
+                      (t
+                       (condition-case err
+                           (progn
+                             (beacon-preview--pandoc-server-handle-response
+                              response-buffer html-path output-buffer)
+                             (when (buffer-live-p source-buffer)
+                               (with-current-buffer source-buffer
+                                 (setq beacon-preview--last-html-path html-path)
+                                 (beacon-preview--postprocess-preview-html-file html-path)
+                                 (setq beacon-preview--last-build-tick
+                                       (buffer-chars-modified-tick))
+                                 (beacon-preview--build-message-finish start-time)))
+                             (funcall callback (list :html html-path)))
+                         (error
+                          (beacon-preview--write-build-output
+                           output-buffer
+                           (list (error-message-string err)))
+                          (funcall callback nil)))))
+                   (when (buffer-live-p output-buffer)
+                     (kill-buffer output-buffer)))))
+             nil t)))
+      (setq beacon-preview--build-request-buffer request-buffer))))
 
 (defun beacon-preview--after-save ()
   "Refresh the current preview after saving the source buffer."
