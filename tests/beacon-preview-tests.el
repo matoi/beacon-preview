@@ -2,10 +2,11 @@
 
 (require 'ert)
 (require 'cl-lib)
-(load-file
- (expand-file-name "../lisp/beacon-preview.el"
-                   (file-name-directory
-                    (or load-file-name buffer-file-name))))
+(add-to-list 'load-path
+             (expand-file-name "../lisp"
+                               (file-name-directory
+                                (or load-file-name buffer-file-name))))
+(require 'beacon-preview)
 
 (defun beacon-preview-test--sync-async-build (callback)
   "Synchronous stand-in for `beacon-preview--build-current-file-async' in tests."

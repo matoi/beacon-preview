@@ -48,7 +48,7 @@ jobs:
           pandoc --version | head -n 3
 
       - name: Byte-compile package
-        run: emacs --batch -Q -L lisp -f batch-byte-compile lisp/beacon-preview.el
+        run: emacs --batch -Q -L lisp -f batch-byte-compile lisp/beacon-preview.el lisp/beacon-preview-render.el lisp/beacon-preview-runtime.el
 
       - name: Run test suite
         run: make test
