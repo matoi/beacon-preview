@@ -68,9 +68,21 @@ package:
 
 ## Main Files
 
-- [lisp/beacon-preview.el](lisp/beacon-preview.el) — the package; the entire
-  runtime (Pandoc invocation, libxml DOM instrumentation, xwidget control)
-  lives here.
+The package is split across three files under `lisp/`:
+
+- [lisp/beacon-preview.el](lisp/beacon-preview.el) — entry point. Customs,
+  shared state, keymaps, behavior-style and flash-style systems, and the
+  `beacon-preview-mode` minor mode definition. Loads the other two via
+  `require`.
+- [lisp/beacon-preview-render.el](lisp/beacon-preview-render.el) — pure
+  rendering and parsing. Pandoc-output HTML post-processing (libxml DOM
+  instrumentation, mermaid / CSS / flash-CSS injection), browser-side
+  navigation-script generation, and tree-sitter / `org-element` source
+  traversal.
+- [lisp/beacon-preview-runtime.el](lisp/beacon-preview-runtime.el) — the
+  stateful layer. Pandoc-server lifecycle, build pipeline, xwidget session
+  and callbacks, window/frame management, hooks and timers, and the
+  autoloaded user commands.
 
 ## Quick Start
 
