@@ -144,6 +144,7 @@ install an official release from
 [pandoc.org/installing](https://pandoc.org/installing.html):
 
 ```elisp
+;; Change this if 3030 is already in use on your machine.
 (setq beacon-preview-pandoc-server-port 3030)
 ```
 

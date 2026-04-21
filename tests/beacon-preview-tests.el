@@ -1981,6 +1981,42 @@ request body or the decoded HTML output."
       (delete-file template-file)
       (ignore-errors (delete-file "/tmp/input.md")))))
 
+(ert-deftest beacon-preview-ensure-pandoc-server-restarts-when-port-changes ()
+  (let ((beacon-preview-pandoc-server-port 4040)
+        (beacon-preview--pandoc-server-process 'old-process)
+        (beacon-preview--pandoc-server-process-config
+         (list :host "127.0.0.1" :port 3030))
+        (stopped nil)
+        (started nil))
+    (cl-letf (((symbol-function 'beacon-preview--pandoc-server-live-p)
+               (let ((calls 0))
+                 (lambda ()
+                   (prog1 (>= calls 1)
+                     (cl-incf calls)))))
+              ((symbol-function 'process-live-p)
+               (lambda (process)
+                 (eq process 'old-process)))
+              ((symbol-function 'beacon-preview--stop-pandoc-server)
+               (lambda ()
+                 (setq stopped t
+                       beacon-preview--pandoc-server-process nil
+                       beacon-preview--pandoc-server-process-config nil)))
+              ((symbol-function 'beacon-preview--start-pandoc-server)
+               (lambda ()
+                 (setq started t
+                       beacon-preview--pandoc-server-process 'new-process
+                       beacon-preview--pandoc-server-process-config
+                       (list :host beacon-preview-pandoc-server-host
+                             :port beacon-preview-pandoc-server-port))
+                 'new-process))
+              ((symbol-function 'accept-process-output)
+               (lambda (&rest _) t)))
+      (beacon-preview--ensure-pandoc-server)
+      (should stopped)
+      (should started)
+      (should (equal beacon-preview--pandoc-server-process-config
+                     (list :host "127.0.0.1" :port 4040))))))
+
 (ert-deftest beacon-preview-build-current-file-uses-pandoc-server-backend ()
   "Real build must go through `pandoc server' (an HTTP request, not a
 `call-process' invocation) so repeat builds reuse the same server process."

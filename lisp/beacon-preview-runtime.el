@@ -91,6 +91,7 @@
 (defvar beacon-preview--build-request-buffer)
 (defvar beacon-preview--ephemeral-source-id)
 (defvar beacon-preview--pandoc-server-process)
+(defvar beacon-preview--pandoc-server-process-config)
 
 (declare-function beacon-preview--debug "beacon-preview")
 (declare-function beacon-preview--markdown-source-mode-p "beacon-preview")
@@ -816,7 +817,25 @@ it is currently hidden behind another buffer."
   "Forget PROCESS when the managed pandoc server exits."
   (unless (process-live-p process)
     (when (eq beacon-preview--pandoc-server-process process)
-      (setq beacon-preview--pandoc-server-process nil))))
+      (setq beacon-preview--pandoc-server-process nil
+            beacon-preview--pandoc-server-process-config nil))))
+
+(defun beacon-preview--pandoc-server-config ()
+  "Return the current pandoc server connection settings."
+  (list :host beacon-preview-pandoc-server-host
+        :port beacon-preview-pandoc-server-port))
+
+(defun beacon-preview--managed-pandoc-server-matches-config-p ()
+  "Return non-nil when the managed server matches the configured endpoint."
+  (equal beacon-preview--pandoc-server-process-config
+         (beacon-preview--pandoc-server-config)))
+
+(defun beacon-preview--stop-pandoc-server ()
+  "Stop the managed `pandoc server' process, if any."
+  (when (process-live-p beacon-preview--pandoc-server-process)
+    (delete-process beacon-preview--pandoc-server-process))
+  (setq beacon-preview--pandoc-server-process nil
+        beacon-preview--pandoc-server-process-config nil))
 
 (defun beacon-preview--start-pandoc-server ()
   "Start a managed `pandoc server' process."
@@ -832,6 +851,8 @@ it is currently hidden behind another buffer."
            :noquery t
            :connection-type 'pipe
            :sentinel #'beacon-preview--pandoc-server-sentinel))
+    (setq beacon-preview--pandoc-server-process-config
+          (beacon-preview--pandoc-server-config))
     beacon-preview--pandoc-server-process))
 
 (defun beacon-preview--pandoc-server-startup-log ()
@@ -849,6 +870,8 @@ it is currently hidden behind another buffer."
     (unless beacon-preview-pandoc-server-auto-start
       (user-error "Pandoc server is not reachable at %s"
                   (beacon-preview--pandoc-server-url "/")))
+    (unless (beacon-preview--managed-pandoc-server-matches-config-p)
+      (beacon-preview--stop-pandoc-server))
     (unless (and beacon-preview--pandoc-server-process
                  (process-live-p beacon-preview--pandoc-server-process))
       (beacon-preview--start-pandoc-server))

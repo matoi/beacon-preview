@@ -971,6 +971,12 @@ Set to nil to disable interception and let the xwidget follow links normally."
 (defvar beacon-preview--pandoc-server-process nil
   "Process object for the internally managed `pandoc server', if any.")
 
+(defvar beacon-preview--pandoc-server-process-config nil
+  "Connection settings plist for the managed `pandoc server' process.
+
+This tracks the `:host' and `:port' used when the current managed process was
+started so Beacon Preview can restart it after configuration changes.")
+
 (defvar beacon-preview-command-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "o") #'beacon-preview-dwim)
