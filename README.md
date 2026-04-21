@@ -15,19 +15,28 @@ It focuses on:
 
 ## Requirements
 
-`beacon-preview` works best when these pieces are already available:
+### Required
+
+Without these, `beacon-preview` will not work:
 
 - Emacs with xwidgets support
 - Emacs built with libxml support
 - a graphical Emacs session
 - Pandoc 3.0 or newer, built with the `+server` feature, installed and available in `PATH` (or configured explicitly from Emacs)
-- optional local CSS files if you want custom preview styling such as GitHub-style Markdown CSS
-- optional local Mermaid runtime if you want live Mermaid diagram rendering in preview
-- for Markdown source-side sync: Emacs `treesit` support with the `markdown` grammar available
-- for Org source-side sync: `org-element` support
 
-Markdown source-side block detection assumes a working tree-sitter Markdown
-grammar.
+### Required per source type
+
+You only need the piece that matches the source you edit:
+
+- editing Markdown: Emacs `treesit` support with the `markdown` grammar available (source-side block detection relies on tree-sitter Markdown)
+- editing Org: `org-element` support (shipped with Emacs)
+
+### Optional
+
+These are not required, but unlock extra features:
+
+- local CSS files for custom preview styling such as GitHub-style Markdown CSS
+- a local Mermaid runtime for live Mermaid diagram rendering in preview
 
 For Markdown source-side sync, use tree-sitter Markdown library builds that
 include the fix from
