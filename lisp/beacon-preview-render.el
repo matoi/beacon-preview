@@ -147,6 +147,21 @@ to heading-based navigation."
   (with-selected-window window
     (recenter)))
 
+(defun beacon-preview--move-point-to-window-center (window)
+  "Move point in WINDOW to the line at the window's vertical center.
+
+Leaves `window-start' unchanged so the surrounding content stays in place."
+  (with-selected-window window
+    (let* ((start (window-start window))
+           (body-lines (max 1 (window-body-height window)))
+           (center-offset (/ body-lines 2))
+           (target (save-excursion
+                     (goto-char start)
+                     (forward-line center-offset)
+                     (line-beginning-position))))
+      (goto-char target)
+      (set-window-point window target))))
+
 (defun beacon-preview--window-line-ratio (&optional window position)
   "Return POSITION's approximate vertical ratio within WINDOW.
 
@@ -1627,9 +1642,9 @@ in the inclusive `[0.0, 1.0]' range."
 (defun beacon-preview--apply-preview-entry-to-source (entry source-buffer)
   "Move SOURCE-BUFFER to the position identified by preview manifest ENTRY.
 
-When ENTRY includes `block_progress', place point within the resolved source
-block approximately by logical line.  Otherwise prefer the source block start
-near the top of the window."
+The matched source block is first aligned to ENTRY's `ratio' so the source
+window mirrors the preview's scroll position, then point is moved to the
+source window's vertical center without disturbing that alignment."
   (with-current-buffer source-buffer
     (let* ((kind (alist-get 'kind entry))
            (index (alist-get 'index entry))
@@ -1647,9 +1662,10 @@ near the top of the window."
         (unless (= target (point))
           (push-mark (point) t))
         (goto-char target)
-        (set-window-point window target)
-        (ignore ratio)
-        (beacon-preview--align-window-to-center window)
+        (if (numberp ratio)
+            (beacon-preview--recenter-window-to-ratio window ratio)
+          (beacon-preview--align-window-to-center window))
+        (beacon-preview--move-point-to-window-center window)
         target))))
 
 (defun beacon-preview--nearest-block-source-position-at-pos (pos)
