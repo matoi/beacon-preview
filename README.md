@@ -354,6 +354,24 @@ superseded. Preview builds use a persistent `pandoc server` backend.
 When a build takes longer than `beacon-preview-slow-build-message-threshold`
 (default 0.5 seconds), the elapsed time is shown in the echo area.
 
+If you prefer manual refresh only:
+
+```elisp
+(setq beacon-preview-auto-refresh-on-save nil)
+```
+
+If you want refresh to rebuild preview artifacts without moving the current
+preview position, use:
+
+```elisp
+(setq beacon-preview-refresh-jump-behavior 'preserve)
+```
+
+In both refresh modes, save-triggered refresh may also lightly highlight
+recently edited blocks that are still visible in the preview after reload. This
+is intended as a visual cue only: off-screen edited blocks are ignored, and the
+current scroll behavior still follows the selected refresh mode.
+
 By default, these source-driven refreshes do **not** reclaim a preview side
 window that is currently showing some other buffer. This avoids unexpectedly
 pulling the preview back to the foreground when you intentionally reused that
@@ -364,7 +382,20 @@ hidden preview window again, enable:
 (setq beacon-preview-reveal-hidden-preview-window t)
 ```
 
-If you prefer the preview in its own frame instead of a side window, use:
+If you want live preview to follow source window display-position changes such
+as paging, recentering, or other scroll-induced visible-region updates:
+
+```elisp
+(setq beacon-preview-follow-window-display-changes t)
+```
+
+If you want to coordinate those refresh and follow settings as one preset, use
+a behavior style as described below.
+
+## Preview Display Location
+
+By default, Beacon Preview opens in a side window. If you prefer the preview in
+its own frame instead, use:
 
 ```elisp
 (setq beacon-preview-display-location 'dedicated-frame)
@@ -379,6 +410,8 @@ If you want all previews to share one dedicated frame instead:
 Use `dedicated-frame` when each source buffer should keep its own preview frame,
 or `shared-dedicated-frame` when all previews should rotate through one
 dedicated frame.
+
+## Behavior Styles
 
 If you want to coordinate the main preview-follow settings together, use a
 behavior style instead of setting the individual variables one by one:
@@ -404,7 +437,7 @@ You can also use a custom style plist when you want one explicit bundle:
    :reveal-hidden-preview-window nil))
 ```
 
-### Customizing the flash highlight
+## Flash Highlight
 
 The yellow flash shown when jumping or syncing to a preview target can be
 restyled with `beacon-preview-flash-style`:
@@ -437,30 +470,7 @@ Missing keys in a user preset (or in an inline plist value of
 flash style is baked into the injected preview script at render time, so
 existing previews need to be rebuilt for changes to take effect.
 
-If you prefer manual refresh only:
-
-```elisp
-(setq beacon-preview-auto-refresh-on-save nil)
-```
-
-If you want refresh to rebuild preview artifacts without moving the current
-preview position, use:
-
-```elisp
-(setq beacon-preview-refresh-jump-behavior 'preserve)
-```
-
-In both refresh modes, save-triggered refresh may also lightly highlight
-recently edited blocks that are still visible in the preview after reload. This
-is intended as a visual cue only: off-screen edited blocks are ignored, and the
-current scroll behavior still follows the selected refresh mode.
-
-If you want live preview to follow source window display-position changes such
-as paging, recentering, or other scroll-induced visible-region updates:
-
-```elisp
-(setq beacon-preview-follow-window-display-changes t)
-```
+## Common Settings
 
 For the settings most likely to be adjusted while working:
 
