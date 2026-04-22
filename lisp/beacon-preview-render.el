@@ -629,11 +629,80 @@ buffer-local values even while it uses temporary buffers internally."
         (setq config (plist-put config (car entry) (symbol-value (cdr entry))))))
     config))
 
+(defconst beacon-preview--html-void-elements
+  '(area base br col embed hr img input link meta param source track wbr)
+  "HTML void elements that have no closing tag in HTML5.
+
+Used by the HTML serializer to emit `<br>' / `<img ...>' rather than the
+XML self-closing form. Non-void elements always get an explicit closing
+tag, because the HTML5 parser treats `<a/>' as an unclosed `<a>' and
+swallows subsequent content until the next `</a>' — Pandoc's empty
+per-line source anchors (`<a id=\"cb4-1\"></a>') would otherwise trigger
+that misparse.")
+
+(defun beacon-preview--escape-html-text (text)
+  "Return TEXT escaped for placement in HTML element content."
+  (let ((s (or text "")))
+    (setq s (replace-regexp-in-string "&" "&amp;" s t t))
+    (setq s (replace-regexp-in-string "<" "&lt;" s t t))
+    (setq s (replace-regexp-in-string ">" "&gt;" s t t))
+    s))
+
+(defun beacon-preview--escape-html-attr (text)
+  "Return TEXT escaped for placement inside a double-quoted HTML attribute."
+  (let ((s (or text "")))
+    (setq s (replace-regexp-in-string "&" "&amp;" s t t))
+    (setq s (replace-regexp-in-string "\"" "&quot;" s t t))
+    (setq s (replace-regexp-in-string "<" "&lt;" s t t))
+    s))
+
+(defun beacon-preview--serialize-html-attribute (attr)
+  "Return ATTR (a (NAME . VALUE) cons) as a leading-space HTML attribute."
+  (format " %s=\"%s\""
+          (symbol-name (car attr))
+          (beacon-preview--escape-html-attr (cdr attr))))
+
+(defun beacon-preview--serialize-html-node (node)
+  "Return the HTML serialization of NODE.
+
+Emits no extra whitespace, uses explicit close tags for non-void
+elements, and self-closes only HTML void elements. This avoids both the
+`<a/>'-misparsed-as-open-tag bug and the indentation that `xml-print'
+would otherwise inject between inline elements or inside `<pre>'."
+  (cond
+   ((null node) "")
+   ((stringp node) (beacon-preview--escape-html-text node))
+   ((listp node)
+    (let ((tag (dom-tag node)))
+      (cond
+       ((not (symbolp tag)) "")
+       ((eq tag 'comment)
+        (format "<!--%s-->" (or (car (dom-children node)) "")))
+       (t
+        (let* ((tag-name (symbol-name tag))
+               (attrs (dom-attributes node))
+               (children (dom-children node))
+               (open (concat "<" tag-name
+                             (mapconcat #'beacon-preview--serialize-html-attribute
+                                        attrs ""))))
+          (if (memq tag beacon-preview--html-void-elements)
+              (concat open ">")
+            (concat open ">"
+                    (mapconcat #'beacon-preview--serialize-html-node
+                               children "")
+                    "</" tag-name ">")))))))
+   (t "")))
+
 (defun beacon-preview--serialize-html-dom (dom)
-  "Return a serialized HTML string for libxml DOM root DOM."
-  (with-temp-buffer
-    (xml-print (list dom))
-    (buffer-string)))
+  "Return an HTML5 serialization of DOM, prefixed with `<!DOCTYPE html>'.
+
+Uses an HTML-aware serializer rather than `xml-print' to avoid XML
+self-closing of non-void elements, indentation injection (which would
+shift `<pre>' content and add stray whitespace between inline elements),
+and the loss of the HTML5 doctype that would otherwise drop the page
+into quirks mode."
+  (concat "<!DOCTYPE html>\n"
+          (beacon-preview--serialize-html-node dom)))
 
 (defun beacon-preview--html-find-first-tag (node tag)
   "Return the first descendant of NODE whose tag is TAG."
