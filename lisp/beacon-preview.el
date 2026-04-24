@@ -150,6 +150,7 @@ dedicated preview frame for all source buffers."
   '(:pandoc-template-file
     :pandoc-css-files
     :mermaid-script-file
+    :mathjax-script-file
     :body-wrapper-class)
   "Build setting keys accepted by beacon preview build config plists.")
 
@@ -168,6 +169,7 @@ dedicated preview frame for all source buffers."
                        (:pandoc-css-files (beacon-preview--string-list-p setting))
                        (:pandoc-template-file (beacon-preview--optional-string-p setting))
                        (:mermaid-script-file (beacon-preview--optional-string-p setting))
+                       (:mathjax-script-file (beacon-preview--optional-string-p setting))
                        (:body-wrapper-class (beacon-preview--optional-string-p setting))
                        (_ nil))))
           (setq tail (cddr tail))))
@@ -177,8 +179,9 @@ dedicated preview frame for all source buffers."
   "Optional structured build settings for preview HTML.
 
 Supported keys are `:pandoc-template-file', `:pandoc-css-files',
-`:mermaid-script-file', and `:body-wrapper-class'.  This can be set globally or
-locally, and more specific local values override broader defaults."
+`:mermaid-script-file', `:mathjax-script-file', and `:body-wrapper-class'.
+This can be set globally or locally, and more specific local values override
+broader defaults."
   :type '(choice (const :tag "No structured overrides" nil)
                  (sexp :tag "Build settings plist"))
   :group 'beacon-preview-build)
@@ -236,6 +239,18 @@ files are ignored."
                  file)
   :group 'beacon-preview-build)
 (put 'beacon-preview-mermaid-script-file 'safe-local-variable
+     #'beacon-preview--optional-string-p)
+
+(defcustom beacon-preview-mathjax-script-file nil
+  "Optional MathJax v4 runtime JavaScript file for preview HTML.
+
+When set to an existing MathJax v4 combined component, such as
+`tex-chtml.js', beacon preview asks Pandoc to preserve TeX math for MathJax and
+injects the local runtime into the generated HTML.  Missing files are ignored."
+  :type '(choice (const :tag "Disabled" nil)
+                 file)
+  :group 'beacon-preview-build)
+(put 'beacon-preview-mathjax-script-file 'safe-local-variable
      #'beacon-preview--optional-string-p)
 
 (defcustom beacon-preview-body-wrapper-class nil
@@ -905,10 +920,7 @@ Set to nil to disable interception and let the xwidget follow links normally."
   "Path to the last generated preview HTML file.")
 
 (defvar beacon-preview--manifest nil
-  "Cached beacon manifest loaded from JSON.")
-
-(defvar beacon-preview--manifest-path nil
-  "Path of the currently loaded beacon manifest.")
+  "Cached preview entries for source-to-preview anchor lookup.")
 
 (defvar-local beacon-preview--preview-html-cache nil
   "Cached preview HTML entries for the current source buffer.")

@@ -12,6 +12,7 @@ It focuses on:
 - applying optional preview CSS files from Pandoc build settings
 - adding beacon markers to headings and block-level elements
 - supporting Mermaid diagrams via an optional local runtime script
+- rendering TeX math via an optional local MathJax v4 runtime script
 - resolving source-side blocks structurally instead of by line-by-line fallback scans
 - opening the result in Emacs xwidget
 - keeping the live preview and source buffer easy to navigate together
@@ -40,6 +41,8 @@ These are not required, but unlock extra features:
 
 - local CSS files for custom preview styling such as GitHub-style Markdown CSS
 - a local Mermaid runtime for live Mermaid diagram rendering in preview
+- a local MathJax v4 combined component such as `tex-chtml.js` for TeX math
+  rendering in preview
 
 ## Installation
 
@@ -180,6 +183,8 @@ basic preview pipeline:
 (setq beacon-preview-body-wrapper-class "markdown-body")
 (setq beacon-preview-mermaid-script-file
       "/path/to/mermaid.js")
+(setq beacon-preview-mathjax-script-file
+      "/path/to/node_modules/@mathjax/src/bundle/tex-chtml.js")
 ```
 
 These settings are all optional:
@@ -188,10 +193,14 @@ These settings are all optional:
 - `beacon-preview-body-wrapper-class` wraps preview body content in one
   `article` element so wrapper-scoped CSS can apply cleanly
 - `beacon-preview-mermaid-script-file` injects a local Mermaid runtime when present
+- `beacon-preview-mathjax-script-file` asks Pandoc to preserve TeX math for
+  MathJax and injects a local MathJax v4 runtime when present
 - no custom Pandoc template is required for this CSS + wrapper path
 
 If any of those files are absent, preview builds still succeed and fall back to
-plain Pandoc HTML or untranslated Mermaid source blocks.
+plain Pandoc HTML, untranslated Mermaid source blocks, or unrendered TeX math.
+For MathJax v4, install or copy a combined component such as `tex-chtml.js`;
+the v3 `/es5/tex-chtml-full.js` layout is not required.
 
 If you want simple defaults for all Markdown buffers versus all Org buffers,
 use `beacon-preview-build-settings-by-source-kind`:
@@ -201,7 +210,8 @@ use `beacon-preview-build-settings-by-source-kind`:
       '((markdown
          :pandoc-css-files ("/path/to/github-markdown.css")
          :body-wrapper-class "markdown-body"
-         :mermaid-script-file "/path/to/node_modules/mermaid/dist/mermaid.js")
+         :mermaid-script-file "/path/to/node_modules/mermaid/dist/mermaid.js"
+         :mathjax-script-file "/path/to/node_modules/@mathjax/src/bundle/tex-chtml.js")
         (org
          :pandoc-css-files ("/path/to/org-preview.css"))))
 ```
@@ -236,6 +246,8 @@ One concrete setup might look like:
 (setq beacon-preview-body-wrapper-class "markdown-body")
 (setq beacon-preview-mermaid-script-file
       "/path/to/node_modules/mermaid/dist/mermaid.js")
+(setq beacon-preview-mathjax-script-file
+      "/path/to/node_modules/@mathjax/src/bundle/tex-chtml.js")
 ```
 
 For a quick manual check after enabling those options, open either:
@@ -243,6 +255,8 @@ For a quick manual check after enabling those options, open either:
 ```text
 examples/mermaid-preview-sample.md
 examples/mermaid-preview-sample.org
+examples/mathjax-preview-sample.md
+examples/mathjax-preview-sample.org
 ```
 
 and run `M-x beacon-preview-dwim`.

@@ -54,6 +54,7 @@
 (defvar beacon-preview-pandoc-template-file)
 (defvar beacon-preview-pandoc-css-files)
 (defvar beacon-preview-mermaid-script-file)
+(defvar beacon-preview-mathjax-script-file)
 (defvar beacon-preview-body-wrapper-class)
 (defvar beacon-preview-display-buffer-action)
 (defvar beacon-preview-dedicated-frame-parameters)
@@ -74,7 +75,6 @@
 (defvar beacon-preview--last-url)
 (defvar beacon-preview--last-html-path)
 (defvar beacon-preview--manifest)
-(defvar beacon-preview--manifest-path)
 (defvar beacon-preview--preview-html-cache)
 (defvar beacon-preview--xwidget-buffer)
 (defvar beacon-preview--last-build-tick)
@@ -736,26 +736,10 @@ it is currently hidden behind another buffer."
       (beacon-preview--restore-origin-context origin-window origin-buffer))))
 
 ;;;###autoload
-(defun beacon-preview-load-manifest (file)
-  "Load FILE as the active beacon manifest."
-  (interactive "fBeacon manifest JSON: ")
-  (setq beacon-preview--manifest-path (expand-file-name file))
-  (setq beacon-preview--preview-html-cache nil)
-  (setq beacon-preview--manifest
-        (condition-case err
-            (json-read-file beacon-preview--manifest-path)
-          (error
-           (user-error "Failed to load manifest %s: %s"
-                       beacon-preview--manifest-path
-                       (error-message-string err)))))
-  beacon-preview--manifest)
-
-;;;###autoload
-(defun beacon-preview-clear-manifest ()
-  "Clear the cached beacon manifest."
+(defun beacon-preview-clear-preview-cache ()
+  "Clear cached preview entries for the current source buffer."
   (interactive)
   (setq beacon-preview--manifest nil)
-  (setq beacon-preview--manifest-path nil)
   (setq beacon-preview--preview-html-cache nil))
 
 (defun beacon-preview--command-available-p (command)
@@ -930,6 +914,8 @@ it is currently hidden behind another buffer."
                     ("from" . ,input-format)
                     ("to" . "html")
                     ("standalone" . t)
+                    ,@(when (plist-get config :mathjax-script-file)
+                        `(("html-math-method" . (("method" . "mathjax")))))
                     ,@(when template
                         `(("template" . ,template)))
                     ,@(when css-variables
@@ -1267,6 +1253,28 @@ source block if it is already visible."
     (beacon-preview-jump-to-current-block))
    (t
     (beacon-preview--show-tracked-preview))))
+
+;;;###autoload
+(defun beacon-preview-rebuild-and-reload ()
+  "Force rebuild of preview artifacts and reload the xwidget preview.
+
+Unlike `beacon-preview-dwim', this unconditionally rebuilds the HTML and
+forces the tracked preview buffer to be foregrounded and navigated to the
+fresh URL.  Use this as a recovery command when the preview buffer is
+buried (e.g. another source's preview currently occupies the display) or
+when the xwidget session handle is not retrievable from the buried state,
+which can cause the automatic save/revert refresh path to skip its work."
+  (interactive)
+  (unless (beacon-preview--supported-source-mode-p)
+    (user-error "Current mode is not supported for beacon preview"))
+  (unless (buffer-file-name)
+    (user-error "Current buffer is not visiting a file"))
+  (beacon-preview--build-message-start)
+  (let* ((artifacts (beacon-preview-build-current-file))
+         (html-path (plist-get artifacts :html))
+         (anchor (beacon-preview--current-anchor-maybe)))
+    (beacon-preview--open-preview html-path anchor t)
+    (message "[beacon-preview] rebuilt and reloaded: %s" html-path)))
 
 ;;;###autoload
 (defun beacon-preview-show-preview ()

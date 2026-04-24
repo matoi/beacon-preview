@@ -190,6 +190,72 @@
       (should (string= (beacon-preview-current-block-anchor)
                        "beacon-pre-2")))))
 
+(ert-deftest beacon-preview-current-block-anchor-resolves-fenced-math-block-to-paragraph ()
+  (let ((beacon-preview--manifest
+         '(((kind . "p") (index . 1) (anchor . "beacon-p-1"))
+           ((kind . "pre") (index . 1) (anchor . "beacon-pre-1")))))
+    (with-temp-buffer
+      (insert
+       "```math\n"
+       "\\begin{aligned}\n"
+       "\\nabla \\cdot \\mathbf{E} &= \\frac{\\rho}{\\epsilon_0} \\\\\n"
+       "\\nabla \\cdot \\mathbf{B} &= 0\n"
+       "\\end{aligned}\n"
+       "```\n\n"
+       "```elisp\n"
+       "(message \"beacon-preview mathjax sample\")\n"
+       "```\n")
+      (setq-local major-mode 'markdown-mode)
+      (goto-char (point-min))
+      (search-forward "\\nabla")
+      (should (string= (beacon-preview-current-block-anchor)
+                       "beacon-p-1"))
+      (search-forward "message")
+      (should (string= (beacon-preview-current-block-anchor)
+                       "beacon-pre-1")))))
+
+(ert-deftest beacon-preview-current-block-anchor-keeps-fenced-math-as-pre-for-markdown-input ()
+  (let ((beacon-preview--manifest
+         '(((kind . "pre") (index . 1) (anchor . "beacon-pre-1"))
+           ((kind . "pre") (index . 2) (anchor . "beacon-pre-2")))))
+    (with-temp-buffer
+      (insert
+       "```math\n"
+       "a^2 + b^2 = c^2\n"
+       "```\n\n"
+       "```elisp\n"
+       "(message \"beacon-preview mathjax sample\")\n"
+       "```\n")
+      (setq-local major-mode 'markdown-mode)
+      (cl-letf (((symbol-function 'beacon-preview--pandoc-input-format)
+                 (lambda (&optional _buffer) "markdown")))
+        (goto-char (point-min))
+        (search-forward "a^2")
+        (should (string= (beacon-preview-current-block-anchor)
+                         "beacon-pre-1"))
+        (search-forward "message")
+        (should (string= (beacon-preview-current-block-anchor)
+                         "beacon-pre-2"))))))
+
+(ert-deftest beacon-preview-markdown-preview-kind-normalizes-gfm-fenced-math ()
+  (with-temp-buffer
+    (insert "```math\na^2+b^2=c^2\n```\n")
+    (setq-local major-mode 'markdown-mode)
+    (cl-letf (((symbol-function 'beacon-preview--pandoc-input-format)
+               (lambda (&optional _buffer) "gfm")))
+      (let* ((parser (beacon-preview--markdown-treesit-parser))
+             (root (treesit-parser-root-node parser))
+             (math-node nil))
+        (cl-labels ((walk (node)
+                      (when (string= (treesit-node-type node) "fenced_code_block")
+                        (setq math-node node))
+                      (dotimes (i (treesit-node-child-count node))
+                        (walk (treesit-node-child node i)))))
+          (walk root))
+        (should math-node)
+        (should (equal (beacon-preview--markdown-treesit-preview-kind math-node)
+                       "p"))))))
+
 (ert-deftest beacon-preview-current-anchor-falls-back-to-heading-when-block-anchor-is-missing ()
   (let ((beacon-preview--manifest
          '(((kind . "h2")
@@ -376,6 +442,53 @@
       (setq-local major-mode 'org-mode)
       (should (string= (beacon-preview-current-block-anchor)
                        "beacon-p-2")))))
+
+(ert-deftest beacon-preview-org-current-block-anchor-resolves-latex-environment-to-paragraph ()
+  (let ((beacon-preview--manifest
+         '(((kind . "p") (index . 1) (anchor . "beacon-p-1"))
+           ((kind . "pre") (index . 1) (anchor . "beacon-pre-1")))))
+    (with-temp-buffer
+      (insert
+       "\\[\n"
+       "\\begin{aligned}\n"
+       "\\nabla \\cdot \\mathbf{E} &= \\frac{\\rho}{\\epsilon_0} \\\\\n"
+       "\\nabla \\cdot \\mathbf{B} &= 0\n"
+       "\\end{aligned}\n"
+       "\\]\n\n"
+       "#+begin_src emacs-lisp\n"
+       "(message \"beacon-preview mathjax sample\")\n"
+       "#+end_src\n")
+      (goto-char (point-min))
+      (search-forward "\\nabla")
+      (setq-local major-mode 'org-mode)
+      (should (string= (beacon-preview-current-block-anchor)
+                       "beacon-p-1"))
+      (search-forward "message")
+      (should (string= (beacon-preview-current-block-anchor)
+                       "beacon-pre-1")))))
+
+(ert-deftest beacon-preview-org-preview-kind-normalizes-latex-environment ()
+  (with-temp-buffer
+    (insert
+     "\\[\n"
+     "\\begin{aligned}\n"
+     "a &= b\n"
+     "\\end{aligned}\n"
+     "\\]\n")
+    (setq-local major-mode 'org-mode)
+    (let ((latex nil)
+          (wrappers nil))
+      (org-element-map (org-element-parse-buffer) '(paragraph latex-environment)
+        (lambda (element)
+          (pcase (org-element-type element)
+            (`latex-environment
+             (setq latex element))
+            (`paragraph
+             (push element wrappers)))))
+      (should latex)
+      (should (equal (beacon-preview--org-element-preview-kind latex) "p"))
+      (dolist (wrapper wrappers)
+        (should-not (beacon-preview--org-element-preview-kind wrapper))))))
 
 (ert-deftest beacon-preview-org-current-block-anchor-resolves-quote-block ()
   (let ((beacon-preview--manifest
@@ -1112,6 +1225,58 @@ LineTerminators) must be escaped so they cannot terminate the literal."
           (should (string-match-p "Mermaid runtime not found" captured-message)))
       (delete-file html-file))))
 
+(ert-deftest beacon-preview-postprocess-preview-html-file-injects-local-mathjax-runtime ()
+  (let ((html-file (make-temp-file "beacon-preview-html-" nil ".html"))
+        (mathjax-file (make-temp-file "beacon-preview-mathjax-" nil ".js"))
+        (beacon-preview-mathjax-script-file nil))
+    (unwind-protect
+        (progn
+          (with-temp-file mathjax-file
+            (insert "window.MathJax = window.MathJax || {};"))
+          (setq beacon-preview-mathjax-script-file mathjax-file)
+          (with-temp-file html-file
+            (insert
+             "<html><head>"
+             "<script defer=\"\" src=\"https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml-full.js\" type=\"text/javascript\"></script>"
+             "</head><body>"
+             "<p><span class=\"math inline\">\\(E=mc^2\\)</span></p>"
+             "</body></html>"))
+          (let ((output (progn
+                          (beacon-preview--postprocess-preview-html-file html-file)
+                          (with-temp-buffer
+                            (insert-file-contents html-file)
+                            (buffer-string)))))
+            (should-not (string-match-p "cdn\\.jsdelivr\\.net/npm/mathjax" output))
+            (should (string-match-p
+                     (regexp-quote
+                      (format "<script defer src=\"%s\"></script>"
+                              (beacon-preview--file-url
+                               (expand-file-name mathjax-file))))
+                     output))
+            (should (string-match-p "\\\\(E=mc\\^2\\\\)" output))))
+      (delete-file html-file)
+      (delete-file mathjax-file))))
+
+(ert-deftest beacon-preview-postprocess-preview-html-file-skips-missing-mathjax-runtime ()
+  (let ((html-file (make-temp-file "beacon-preview-html-" nil ".html"))
+        (beacon-preview-mathjax-script-file "/tmp/definitely-missing-mathjax-runtime.js"))
+    (unwind-protect
+        (progn
+          (with-temp-file html-file
+            (insert
+             "<html><head>"
+             "<script defer=\"\" src=\"https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml-full.js\" type=\"text/javascript\"></script>"
+             "</head><body><p><span class=\"math inline\">\\(x\\)</span></p></body></html>"))
+          (let ((output (progn
+                          (beacon-preview--postprocess-preview-html-file html-file)
+                          (with-temp-buffer
+                            (insert-file-contents html-file)
+                            (buffer-string)))))
+            (should-not (string-match-p "cdn\\.jsdelivr\\.net/npm/mathjax" output))
+            (should-not (string-match-p "definitely-missing-mathjax" output))
+            (should (string-match-p "window\\.BeaconPreview" output))))
+      (delete-file html-file))))
+
 (ert-deftest beacon-preview-postprocess-preview-html-file-uses-major-mode-default-wrapper-and-mermaid ()
   (let ((html-file (make-temp-file "beacon-preview-html-" nil ".html"))
         (mermaid-file (make-temp-file "beacon-preview-mermaid-" nil ".js")))
@@ -1716,7 +1881,8 @@ LineTerminators) must be escaped so they cannot terminate the literal."
 (ert-deftest beacon-preview-build-settings-respect-buffer-local-values ()
   (let ((css-file (make-temp-file "beacon-preview-css-" nil ".css"))
         (template-file (make-temp-file "beacon-preview-template-" nil ".html"))
-        (mermaid-file (make-temp-file "beacon-preview-mermaid-" nil ".js")))
+        (mermaid-file (make-temp-file "beacon-preview-mermaid-" nil ".js"))
+        (mathjax-file (make-temp-file "beacon-preview-mathjax-" nil ".js")))
     (unwind-protect
         (with-temp-buffer
           (setq-local buffer-file-name "/tmp/sample.md")
@@ -1724,12 +1890,15 @@ LineTerminators) must be escaped so they cannot terminate the literal."
           (setq-local beacon-preview-pandoc-css-files (list css-file))
           (setq-local beacon-preview-pandoc-template-file template-file)
           (setq-local beacon-preview-mermaid-script-file mermaid-file)
+          (setq-local beacon-preview-mathjax-script-file mathjax-file)
           (setq-local beacon-preview-body-wrapper-class "markdown-body")
           (let ((config (beacon-preview--current-build-config)))
             (should (equal (plist-get config :pandoc-template-file)
                            template-file))
             (should (equal (plist-get config :pandoc-css-files)
-                           (list css-file))))
+                           (list css-file)))
+            (should (equal (plist-get config :mathjax-script-file)
+                           mathjax-file)))
           (let ((html-file (make-temp-file "beacon-preview-html-" nil ".html")))
             (unwind-protect
                 (progn
@@ -1756,7 +1925,8 @@ LineTerminators) must be escaped so they cannot terminate the literal."
               (delete-file html-file))))
       (delete-file css-file)
       (delete-file template-file)
-      (delete-file mermaid-file))))
+      (delete-file mermaid-file)
+      (delete-file mathjax-file))))
 
 (ert-deftest beacon-preview-build-settings-are-safe-file-local-variables ()
   (should (safe-local-variable-p 'beacon-preview-build-settings
@@ -1764,6 +1934,7 @@ LineTerminators) must be escaped so they cannot terminate the literal."
   (should (safe-local-variable-p 'beacon-preview-pandoc-template-file "/tmp/template.html"))
   (should (safe-local-variable-p 'beacon-preview-pandoc-css-files '("/tmp/a.css" "/tmp/b.css")))
   (should (safe-local-variable-p 'beacon-preview-mermaid-script-file "/tmp/mermaid.js"))
+  (should (safe-local-variable-p 'beacon-preview-mathjax-script-file "/tmp/mathjax/tex-chtml.js"))
   (should (safe-local-variable-p 'beacon-preview-body-wrapper-class "markdown-body")))
 
 (ert-deftest beacon-preview-current-build-config-uses-source-kind-defaults-for-markdown ()
@@ -1773,7 +1944,8 @@ LineTerminators) must be escaped so they cannot terminate the literal."
            '((markdown
               :pandoc-css-files ("/tmp/github.css")
               :body-wrapper-class "markdown-body"
-              :mermaid-script-file "/tmp/mermaid.js")
+              :mermaid-script-file "/tmp/mermaid.js"
+              :mathjax-script-file "/tmp/mathjax/tex-chtml.js")
              (org
               :pandoc-css-files ("/tmp/org.css")))))
       (let ((config (beacon-preview--current-build-config)))
@@ -1782,7 +1954,9 @@ LineTerminators) must be escaped so they cannot terminate the literal."
         (should (equal (plist-get config :body-wrapper-class)
                        "markdown-body"))
         (should (equal (plist-get config :mermaid-script-file)
-                       "/tmp/mermaid.js"))))))
+                       "/tmp/mermaid.js"))
+        (should (equal (plist-get config :mathjax-script-file)
+                       "/tmp/mathjax/tex-chtml.js"))))))
 
 (ert-deftest beacon-preview-current-build-config-uses-source-kind-defaults-for-org ()
   (with-temp-buffer
@@ -1806,18 +1980,22 @@ LineTerminators) must be escaped so they cannot terminate the literal."
            '((markdown
               :pandoc-css-files ("/tmp/github.css")
               :body-wrapper-class "markdown-body"
-              :mermaid-script-file "/tmp/source-kind-mermaid.js")))
+              :mermaid-script-file "/tmp/source-kind-mermaid.js"
+              :mathjax-script-file "/tmp/source-kind-mathjax.js")))
           (beacon-preview-build-settings-by-major-mode
            '((gfm-mode
               :pandoc-css-files ("/tmp/gfm.css")
-              :mermaid-script-file "/tmp/gfm-mermaid.js"))))
+              :mermaid-script-file "/tmp/gfm-mermaid.js"
+              :mathjax-script-file "/tmp/gfm-mathjax.js"))))
       (let ((config (beacon-preview--current-build-config)))
         (should (equal (plist-get config :pandoc-css-files)
                        '("/tmp/gfm.css")))
         (should (equal (plist-get config :body-wrapper-class)
                        "markdown-body"))
         (should (equal (plist-get config :mermaid-script-file)
-                       "/tmp/gfm-mermaid.js"))))))
+                       "/tmp/gfm-mermaid.js"))
+        (should (equal (plist-get config :mathjax-script-file)
+                       "/tmp/gfm-mathjax.js"))))))
 
 (ert-deftest beacon-preview-current-build-config-buffer-local-variable-overrides-source-kind-defaults ()
   (with-temp-buffer
@@ -1981,6 +2159,36 @@ request body or the decoded HTML output."
       (delete-file template-file)
       (ignore-errors (delete-file "/tmp/input.md")))))
 
+(ert-deftest beacon-preview-pandoc-server-request-enables-mathjax-output ()
+  (let ((mathjax-file (make-temp-file "beacon-preview-mathjax-" nil ".js")))
+    (unwind-protect
+        (with-temp-buffer
+          (insert "$E=mc^2$\n")
+          (setq-local buffer-file-name "/tmp/sample.md")
+          (setq-local major-mode 'markdown-mode)
+          (setq-local beacon-preview-mathjax-script-file mathjax-file)
+          (cl-letf (((symbol-function 'beacon-preview--ensure-pandoc-server)
+                     (lambda () t))
+                    ((symbol-function 'beacon-preview--validate-build-prerequisites)
+                     (lambda () t))
+                    ((symbol-function 'beacon-preview--prepare-build-source)
+                     (lambda ()
+                       (with-temp-file "/tmp/input.md"
+                         (insert "$E=mc^2$\n"))
+                       (list :input-file "/tmp/input.md"
+                             :output-dir temporary-file-directory
+                             :default-directory temporary-file-directory)))
+                    ((symbol-function 'beacon-preview--artifact-paths)
+                     (lambda ()
+                       (list :html (expand-file-name "out.html" temporary-file-directory)))))
+            (let* ((request (beacon-preview--pandoc-server-request))
+                   (payload (plist-get request :payload))
+                   (math-method (alist-get "html-math-method" payload nil nil #'string=)))
+              (should (equal (alist-get "method" math-method nil nil #'string=)
+                             "mathjax")))))
+      (delete-file mathjax-file)
+      (ignore-errors (delete-file "/tmp/input.md")))))
+
 (ert-deftest beacon-preview-ensure-pandoc-server-restarts-when-port-changes ()
   (let ((beacon-preview-pandoc-server-port 4040)
         (beacon-preview--pandoc-server-process 'old-process)
@@ -2098,16 +2306,12 @@ server-reported error as a `user-error' rather than silently producing HTML."
           (kill-buffer (get-file-buffer source-file))))
       (delete-directory tmp-root t))))
 
-(ert-deftest beacon-preview-load-manifest-errors-cleanly-on-invalid-json ()
-  (let ((manifest-file (make-temp-file "beacon-preview-manifest-" nil ".json")))
-    (unwind-protect
-        (progn
-          (with-temp-file manifest-file
-            (insert "{not valid json"))
-          (should-error
-           (beacon-preview-load-manifest manifest-file)
-           :type 'user-error))
-      (delete-file manifest-file))))
+(ert-deftest beacon-preview-clear-preview-cache-clears-in-memory-entries ()
+  (let ((beacon-preview--manifest '(((kind . "p") (index . 1))))
+        (beacon-preview--preview-html-cache '(:ordered (((kind . "p"))))))
+    (beacon-preview-clear-preview-cache)
+    (should-not beacon-preview--manifest)
+    (should-not beacon-preview--preview-html-cache)))
 
 (ert-deftest beacon-preview-dwim-url-adds-anchor-fragment ()
   (should (string-match-p "#section$"

@@ -47,10 +47,10 @@
 (defvar beacon-preview-pandoc-template-file)
 (defvar beacon-preview-pandoc-css-files)
 (defvar beacon-preview-mermaid-script-file)
+(defvar beacon-preview-mathjax-script-file)
 (defvar beacon-preview-body-wrapper-class)
 (defvar beacon-preview-refresh-jump-behavior)
 (defvar beacon-preview--manifest)
-(defvar beacon-preview--manifest-path)
 (defvar beacon-preview--markdown-treesit-cache)
 (defvar beacon-preview--markdown-treesit-cache-tick)
 (defvar beacon-preview--org-element-cache)
@@ -63,6 +63,7 @@
 (declare-function beacon-preview--markdown-source-mode-p "beacon-preview")
 (declare-function beacon-preview--supported-source-mode-p "beacon-preview")
 (declare-function beacon-preview--source-kind "beacon-preview")
+(declare-function beacon-preview--pandoc-input-format "beacon-preview")
 (declare-function beacon-preview--build-settings-plist-p "beacon-preview")
 (declare-function beacon-preview--flash-style-spec "beacon-preview")
 
@@ -618,12 +619,14 @@ buffer-local values even while it uses temporary buffers internally."
     (dolist (entry '((:pandoc-template-file . beacon-preview-pandoc-template-file)
                      (:pandoc-css-files . beacon-preview-pandoc-css-files)
                      (:mermaid-script-file . beacon-preview-mermaid-script-file)
+                     (:mathjax-script-file . beacon-preview-mathjax-script-file)
                      (:body-wrapper-class . beacon-preview-body-wrapper-class)))
       (when (local-variable-p (cdr entry))
         (setq config (plist-put config (car entry) (symbol-value (cdr entry))))))
     (dolist (entry '((:pandoc-template-file . beacon-preview-pandoc-template-file)
                      (:pandoc-css-files . beacon-preview-pandoc-css-files)
                      (:mermaid-script-file . beacon-preview-mermaid-script-file)
+                     (:mathjax-script-file . beacon-preview-mathjax-script-file)
                      (:body-wrapper-class . beacon-preview-body-wrapper-class)))
       (unless (plist-member config (car entry))
         (setq config (plist-put config (car entry) (symbol-value (cdr entry))))))
@@ -811,6 +814,25 @@ into quirks mode."
                  script-file)
         nil))))
 
+(defun beacon-preview--strip-pandoc-mathjax-script-tags (html)
+  "Remove Pandoc's default remote MathJax script tags from HTML."
+  (replace-regexp-in-string
+   "<script\\(?:.\\|\n\\)*?src=\"https://cdn\\.jsdelivr\\.net/npm/mathjax@[^\"<>]+\"\\(?:.\\|\n\\)*?</script>[ \t\r\n]*"
+   ""
+   html t t))
+
+(defun beacon-preview--render-mathjax-script-tags (config)
+  "Return optional MathJax runtime script tags, or nil when unavailable."
+  (let ((script-file (plist-get config :mathjax-script-file)))
+    (when script-file
+      (if (file-exists-p script-file)
+          (format "<script defer src=\"%s\"></script>"
+                  (beacon-preview--file-url
+                   (expand-file-name script-file)))
+        (message "[beacon-preview] MathJax runtime not found: %s"
+                 script-file)
+        nil))))
+
 (defun beacon-preview--render-css-link-tags (config)
   "Return optional CSS link tags for CONFIG, or nil when none are available."
   (let ((links nil))
@@ -882,6 +904,9 @@ PREFIX defaults to `beacon'."
               (beacon-preview--instrument-html-dom dom prefix config))))
          (html (beacon-preview--restore-script-style-bodies
                 (plist-get result :html) restore-alist))
+         (html (if (plist-get config :mathjax-script-file)
+                   (beacon-preview--strip-pandoc-mathjax-script-tags html)
+                 html))
          (html (if-let ((css-fragment
                          (beacon-preview--render-css-link-tags config)))
                    (beacon-preview--inject-into-head html css-fragment)
@@ -889,6 +914,10 @@ PREFIX defaults to `beacon'."
          (html (if-let ((mermaid-fragment
                          (beacon-preview--render-mermaid-script-tags config)))
                    (beacon-preview--inject-into-head html mermaid-fragment)
+                 html))
+         (html (if-let ((mathjax-fragment
+                         (beacon-preview--render-mathjax-script-tags config)))
+                   (beacon-preview--inject-into-head html mathjax-fragment)
                  html))
          (html (beacon-preview--inject-navigation-api html))
          (entries (plist-get result :entries)))
@@ -898,7 +927,6 @@ PREFIX defaults to `beacon'."
                        :by-kind (beacon-preview--html-cache-by-kind entries)
                        :html-path (expand-file-name html-path))))
       (setq beacon-preview--preview-html-cache cache)
-      (setq beacon-preview--manifest-path nil)
       (setq beacon-preview--manifest entries)
       cache)))
 
@@ -958,8 +986,31 @@ PREFIX defaults to `beacon'."
        kind))
     (_ nil)))
 
-(defun beacon-preview--markdown-treesit-entry-kind (node)
-  "Return manifest kind string for Markdown tree-sitter NODE, or nil."
+(defun beacon-preview--markdown-treesit-fenced-math-block-p (node)
+  "Return non-nil when NODE is a Markdown fenced math block.
+
+Pandoc's GFM reader renders ```math fences as display math paragraphs, not
+`pre' blocks, so source-side indexing needs to classify them as `p' as well."
+  (when (and (string= (beacon-preview--pandoc-input-format) "gfm")
+             (string= (treesit-node-type node) "fenced_code_block"))
+    (let* ((begin (treesit-node-start node))
+           (line-end (save-excursion
+                       (goto-char begin)
+                       (line-end-position)))
+           (line (buffer-substring-no-properties begin line-end)))
+      (when (string-match "\\`[ \t]*\\(?:```+\\|~~~+\\)[ \t]*\\(.*?\\)[ \t]*\\'" line)
+        (let* ((info (string-trim (match-string 1 line)))
+               (token (car (split-string info "[ \t]+" t))))
+          (or (string= token "math")
+              (string-match-p "\\(?:\\`\\|[ \t{]\\)\\.math\\(?:\\'\\|[ \t}]\\)"
+                              info)))))))
+
+(defun beacon-preview--markdown-treesit-preview-kind (node)
+  "Return preview HTML kind for Markdown tree-sitter NODE, or nil.
+
+The returned kind is intentionally normalized to the block kind Pandoc emits in
+preview HTML, not just the parser node type.  For example, GFM fenced math is a
+`fenced_code_block' in tree-sitter but a display math paragraph in Pandoc HTML."
   (or (beacon-preview--markdown-treesit-heading-kind node)
       (pcase (treesit-node-type node)
         ("paragraph"
@@ -969,7 +1020,10 @@ PREFIX defaults to `beacon'."
              "p")))
         ("list_item" "li")
         ("block_quote" "blockquote")
-        ("fenced_code_block" "pre")
+        ("fenced_code_block"
+         (if (beacon-preview--markdown-treesit-fenced-math-block-p node)
+             "p"
+           "pre"))
         ("pipe_table" "table")
         (_ nil))))
 
@@ -1015,7 +1069,7 @@ NODE, KIND, BEGIN, and END describe the entry being recorded."
           (kind-tables (make-hash-table :test #'equal)))
       (cl-labels
           ((walk (node)
-             (when-let ((kind (beacon-preview--markdown-treesit-entry-kind node)))
+             (when-let ((kind (beacon-preview--markdown-treesit-preview-kind node)))
                (let* ((begin (treesit-node-start node))
                       (end (treesit-node-end node))
                       (index (1+ (length (gethash kind kind-tables nil))))
@@ -1141,30 +1195,44 @@ considered."
        (fboundp 'org-element-type)
        (fboundp 'org-element-property)))
 
-(defun beacon-preview--org-element-paragraph-suppressed-p (element)
-  "Return non-nil when Org paragraph ELEMENT should not produce a beacon."
+(defun beacon-preview--org-element-preview-ignored-p (element)
+  "Return non-nil when Org ELEMENT should not produce a preview entry.
+
+This filters parser nodes that Pandoc does not emit as independent preview
+blocks, such as the wrapper-only `\\[' and `\\]' paragraphs around a LaTeX
+display math environment."
   (let ((parent (org-element-property :parent element))
-        (suppressed nil))
-    (while (and parent (not suppressed))
+        (ignored nil))
+    (when-let* ((begin (org-element-property :begin element))
+                (end (org-element-property :end element))
+                (text (string-trim
+                       (buffer-substring-no-properties begin end))))
+      (when (member text '("\\[" "\\]"))
+        (setq ignored t)))
+    (while (and parent (not ignored))
       (when (memq (org-element-type parent)
                   '(item quote-block src-block example-block table table-row table-cell))
-        (setq suppressed t))
+        (setq ignored t))
       (setq parent (org-element-property :parent parent)))
-    suppressed))
+    ignored))
 
-(defun beacon-preview--org-element-kind (element)
-  "Return manifest kind string for Org ELEMENT, or nil."
-  (pcase (org-element-type element)
-    (`headline
-     (format "h%d" (org-element-property :level element)))
-    (`item "li")
-    (`paragraph
-     (unless (beacon-preview--org-element-paragraph-suppressed-p element)
-       "p"))
-    (`quote-block "blockquote")
-    ((or `src-block `example-block) "pre")
-    (`table "table")
-    (_ nil)))
+(defun beacon-preview--org-element-preview-kind (element)
+  "Return preview HTML kind for Org ELEMENT, or nil.
+
+The returned kind is normalized to the block kind Pandoc emits in preview HTML.
+For example, an Org `latex-environment' inside display math is rendered as a
+display math paragraph, so it contributes a `p' entry."
+  (unless (beacon-preview--org-element-preview-ignored-p element)
+    (pcase (org-element-type element)
+      (`headline
+       (format "h%d" (org-element-property :level element)))
+      (`item "li")
+      (`paragraph "p")
+      (`latex-environment "p")
+      (`quote-block "blockquote")
+      ((or `src-block `example-block) "pre")
+      (`table "table")
+      (_ nil))))
 
 (defun beacon-preview--org-element-entry-metadata (element kind)
   "Return extra metadata alist for Org ELEMENT of manifest KIND."
@@ -1190,9 +1258,9 @@ considered."
           (ordered nil)
           (kind-tables (make-hash-table :test #'equal)))
       (org-element-map ast
-          '(headline item paragraph quote-block src-block example-block table)
+          '(headline item paragraph latex-environment quote-block src-block example-block table)
         (lambda (element)
-          (when-let ((kind (beacon-preview--org-element-kind element)))
+          (when-let ((kind (beacon-preview--org-element-preview-kind element)))
             (let* ((index (1+ (length (gethash kind kind-tables nil))))
                    (entry (append
                            (list (cons 'index index))
@@ -2048,7 +2116,7 @@ This aims to be closer to Pandoc's generated heading identifiers."
       anchor)))
 
 (defun beacon-preview--manifest-entries ()
-  "Return cached manifest entries as a plain list."
+  "Return cached preview entries as a plain list."
   (and beacon-preview--manifest
        (append beacon-preview--manifest nil)))
 

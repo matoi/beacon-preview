@@ -1,0 +1,44 @@
+#+TITLE: MathJax Preview Sample
+
+This file is a compact manual check for optional preview styling and MathJax runtime support.
+
+* Checklist
+
+- [X] GitHub-style CSS is applied
+- [X] Wrapper-scoped typography looks reasonable
+- [ ] Inline math renders in the paragraph below
+- [ ] Display math renders below
+
+* Inline Math
+
+Einstein's mass-energy relation is \(E = mc^2\), and a quadratic equation has
+roots \(x = \frac{-b \pm \sqrt{b^2 - 4ac}}{2a}\).
+
+* Display Math
+
+\[
+\int_0^\infty e^{-x^2}\,dx = \frac{\sqrt{\pi}}{2}
+\]
+
+* Aligned Math
+
+\[
+\begin{aligned}
+\nabla \cdot \mathbf{E} &= \frac{\rho}{\epsilon_0} \\
+\nabla \cdot \mathbf{B} &= 0
+\end{aligned}
+\]
+
+* Code Block
+
+#+begin_src emacs-lisp
+(message "beacon-preview mathjax sample")
+#+end_src
+
+* Table
+
+| Item    | Expected Result      |
+|---------+----------------------|
+| Inline  | Typeset in paragraph |
+| Display | Centered equation    |
+| Beacons | Navigation works     |
