@@ -1,7 +1,10 @@
 # beacon-preview
 
-`beacon-preview` is a Pandoc-based preview workflow for Markdown and Org that
-makes generated HTML easy to navigate from Emacs.
+`beacon-preview` is a Pandoc-based live preview workflow for Markdown and Org.
+It lets you navigate generated HTML from Emacs by jumping to or flashing the
+preview location that matches your position in the source buffer.
+It can also sync in the other direction, moving the source buffer to match the
+preview buffer's current viewport.
 
 It focuses on:
 
@@ -11,7 +14,7 @@ It focuses on:
 - supporting Mermaid diagrams via an optional local runtime script
 - resolving source-side blocks structurally instead of by line-by-line fallback scans
 - opening the result in Emacs xwidget
-- jumping or flashing the preview at useful locations from the source buffer
+- keeping the live preview and source buffer easy to navigate together
 
 ## Requirements
 
