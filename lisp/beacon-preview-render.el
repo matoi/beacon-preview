@@ -50,7 +50,7 @@
 (defvar beacon-preview-mathjax-script-file)
 (defvar beacon-preview-body-wrapper-class)
 (defvar beacon-preview-refresh-jump-behavior)
-(defvar beacon-preview--manifest)
+(defvar beacon-preview--preview-entries)
 (defvar beacon-preview--markdown-treesit-cache)
 (defvar beacon-preview--markdown-treesit-cache-tick)
 (defvar beacon-preview--org-element-cache)
@@ -229,6 +229,10 @@ block, including the opening and closing fence lines."
   '("h1" "h2" "h3" "h4" "h5" "h6" "p" "li" "blockquote" "pre" "table")
   "HTML tags instrumented for preview beacons.")
 
+(defconst beacon-preview--source-block-kinds
+  '("pre" "blockquote" "table" "li" "p")
+  "Source-side block kinds that map to preview beacons.")
+
 (defconst beacon-preview--html-container-tags
   '("li" "blockquote")
   "Preview HTML tags whose descendants should not be beaconed independently.")
@@ -359,6 +363,14 @@ per-property defcustoms has not run."
       " box-shadow: inset 0 0 0 %dpx %s;"
       " border-radius: %s;"
       " }\n"
+      "table.beacon-preview-flash-subtle {"
+      " outline: %dpx solid %s;"
+      " outline-offset: 2px;"
+      " }\n"
+      "table.beacon-preview-flash-strong {"
+      " outline: %dpx solid %s;"
+      " outline-offset: 2px;"
+      " }\n"
       "@keyframes beacon-preview-flash-subtle {"
       " 0%% { background-color: %s; }"
       " 50%% { background-color: %s; }"
@@ -371,6 +383,8 @@ per-property defcustoms has not run."
       " }")
      (/ subtle-dur 1000.0) easing subtle-color radius
      (/ strong-dur 1000.0) easing strong-color outline-width outline-color radius
+     outline-width outline-color
+     outline-width outline-color
      subtle-peak subtle-color
      strong-peak outline-width outline-peak
      strong-color outline-width outline-color)))
@@ -753,7 +767,7 @@ into quirks mode."
                     (text (if (stringp texts)
                               texts
                             (mapconcat #'identity texts ""))))
-               ;; Keep pre-like manifest semantics after the node becomes a div.
+               ;; Keep pre-like preview-entry semantics after the node becomes a div.
                (setcar node 'div)
                (dom-set-attribute node 'data-beacon-kind "pre")
                (beacon-preview--html-set-children node (list text))))
@@ -927,18 +941,18 @@ PREFIX defaults to `beacon'."
                        :by-kind (beacon-preview--html-cache-by-kind entries)
                        :html-path (expand-file-name html-path))))
       (setq beacon-preview--preview-html-cache cache)
-      (setq beacon-preview--manifest entries)
+      (setq beacon-preview--preview-entries entries)
       cache)))
 
-(defun beacon-preview--manifest-entry-at-index (kind index)
-  "Return the manifest entry for KIND at 1-based INDEX, or nil."
+(defun beacon-preview--preview-entry-at-index (kind index)
+  "Return the preview entry for KIND at 1-based INDEX, or nil."
   (or (when-let* ((cache beacon-preview--preview-html-cache)
                   (entries (gethash kind (plist-get cache :by-kind) nil)))
         (nth (1- index) entries))
       (seq-find (lambda (entry)
                   (and (equal (alist-get 'kind entry) kind)
                        (= (alist-get 'index entry) index)))
-                (beacon-preview--manifest-entries))))
+                (beacon-preview--preview-entries-list))))
 
 (defun beacon-preview--markdown-treesit-available-p ()
   "Return non-nil when tree-sitter Markdown parsing is available in this buffer."
@@ -967,7 +981,7 @@ PREFIX defaults to `beacon'."
           (treesit-parser-create 'markdown)))))
 
 (defun beacon-preview--markdown-treesit-heading-kind (node)
-  "Return manifest heading kind string for Markdown heading NODE, or nil."
+  "Return preview heading kind string for Markdown heading NODE, or nil."
   (pcase (treesit-node-type node)
     ("atx_heading"
      (when-let ((marker (treesit-node-child node 0)))
@@ -1099,7 +1113,7 @@ NODE, KIND, BEGIN, and END describe the entry being recorded."
       beacon-preview--markdown-treesit-cache)))
 
 (defun beacon-preview--markdown-treesit-entries-for-kind (kind)
-  "Return cached Markdown tree-sitter entries for manifest KIND, or nil."
+  "Return cached Markdown tree-sitter entries for preview KIND, or nil."
   (when-let ((cache (beacon-preview--markdown-treesit-cache)))
     (gethash kind (plist-get cache :by-kind))))
 
@@ -1235,7 +1249,7 @@ display math paragraph, so it contributes a `p' entry."
       (_ nil))))
 
 (defun beacon-preview--org-element-entry-metadata (element kind)
-  "Return extra metadata alist for Org ELEMENT of manifest KIND."
+  "Return extra metadata alist for Org ELEMENT of preview KIND."
   (let ((metadata nil))
     (when (string-match "\\`h\\([0-9]+\\)\\'" kind)
       (setq metadata
@@ -1285,7 +1299,7 @@ display math paragraph, so it contributes a `p' entry."
       beacon-preview--org-element-cache)))
 
 (defun beacon-preview--org-element-entries-for-kind (kind)
-  "Return cached Org entries for manifest KIND, or nil."
+  "Return cached Org entries for preview KIND, or nil."
   (when-let ((cache (beacon-preview--org-element-cache)))
     (gethash kind (plist-get cache :by-kind))))
 
@@ -1513,42 +1527,67 @@ rules so it can align with Pandoc/beaconified `pre' entries."
         (or (when-let* ((entry (beacon-preview--org-element-entry-at-pos
                                 pos
                                 '("pre" "blockquote" "table" "li" "p")))
-                        (manifest-entry
-                         (beacon-preview--manifest-entry-at-index
+                        (preview-entry
+                         (beacon-preview--preview-entry-at-index
                           (alist-get 'kind entry)
                           (alist-get 'index entry)))
-                        (anchor (alist-get 'anchor manifest-entry)))
+                        (anchor (alist-get 'anchor preview-entry)))
               anchor)))
        (t
         (or (when-let* ((entry (beacon-preview--markdown-treesit-entry-at-pos
                                 pos
                                 '("pre" "blockquote" "table" "li" "p")))
-                        (manifest-entry
-                         (beacon-preview--manifest-entry-at-index
+                        (preview-entry
+                         (beacon-preview--preview-entry-at-index
                           (alist-get 'kind entry)
                          (alist-get 'index entry)))
-                        (anchor (alist-get 'anchor manifest-entry)))
+                        (anchor (alist-get 'anchor preview-entry)))
               anchor)
             (when-let* ((index (beacon-preview--markdown-blockquote-index))
-                        (entry (beacon-preview--manifest-entry-at-index "blockquote" index))
+                        (entry (beacon-preview--preview-entry-at-index "blockquote" index))
                         (anchor (alist-get 'anchor entry)))
               anchor)
             (when-let* ((index (beacon-preview--markdown-table-index))
-                        (entry (beacon-preview--manifest-entry-at-index "table" index))
+                        (entry (beacon-preview--preview-entry-at-index "table" index))
                         (anchor (alist-get 'anchor entry)))
               anchor)
             (when-let* ((index (beacon-preview--markdown-list-item-index))
-                        (entry (beacon-preview--manifest-entry-at-index "li" index))
+                        (entry (beacon-preview--preview-entry-at-index "li" index))
                         (anchor (alist-get 'anchor entry)))
               anchor)
             (when-let* ((index (beacon-preview--markdown-paragraph-index))
-                        (entry (beacon-preview--manifest-entry-at-index "p" index))
+                        (entry (beacon-preview--preview-entry-at-index "p" index))
                         (anchor (alist-get 'anchor entry)))
               anchor)))))))
 
 (defun beacon-preview-current-block-anchor ()
   "Return the current block anchor for point, or nil when none is resolved."
   (beacon-preview--block-anchor-at-pos (point)))
+
+(defun beacon-preview--source-block-entry-at-pos (pos)
+  "Return the source block entry at or immediately before POS, or nil."
+  (when (beacon-preview--supported-source-mode-p)
+    (save-excursion
+      (goto-char pos)
+      (cond
+       ((derived-mode-p 'org-mode)
+        (or (beacon-preview--org-element-entry-at-pos
+             pos beacon-preview--source-block-kinds)
+            (progn
+              (skip-chars-backward " \t\n")
+              (or (beacon-preview--org-element-entry-at-pos
+                   (point) beacon-preview--source-block-kinds)
+                  (beacon-preview--org-element-entry-at-or-before-pos
+                   (point) beacon-preview--source-block-kinds)))))
+       (t
+        (or (beacon-preview--markdown-treesit-entry-at-pos
+             pos beacon-preview--source-block-kinds)
+            (progn
+              (skip-chars-backward " \t\n")
+              (or (beacon-preview--markdown-treesit-entry-at-pos
+                   (point) beacon-preview--source-block-kinds)
+                  (beacon-preview--markdown-treesit-entry-at-or-before-pos
+                   (point) beacon-preview--source-block-kinds)))))))))
 
 (defun beacon-preview--org-heading-position-at-index (level index)
   "Return the position of the Org heading at LEVEL and 1-based INDEX, or nil."
@@ -1609,7 +1648,7 @@ rules so it can align with Pandoc/beaconified `pre' entries."
   (beacon-preview--markdown-treesit-position-at-index "pre" index))
 
 (defun beacon-preview--source-position-for-kind-index (kind index)
-  "Return a source position for manifest KIND at 1-based INDEX, or nil."
+  "Return a source position for preview KIND at 1-based INDEX, or nil."
   (when (and kind (integerp index) (> index 0))
     (cond
      ((derived-mode-p 'org-mode)
@@ -1722,7 +1761,7 @@ rules so it can align with Pandoc/beaconified `pre' entries."
           :end (alist-get 'end entry))))
 
 (defun beacon-preview--source-block-range-for-kind-index (kind index)
-  "Return a source block range plist for manifest KIND at 1-based INDEX, or nil."
+  "Return a source block range plist for preview KIND at 1-based INDEX, or nil."
   (when-let ((position (beacon-preview--source-position-for-kind-index kind index)))
     (save-excursion
       (goto-char position)
@@ -1771,13 +1810,61 @@ in the inclusive `[0.0, 1.0]' range."
           (let* ((begin-line (line-number-at-pos begin))
                  (end-line (line-number-at-pos end))
                  (line-span (max 0 (- end-line begin-line)))
-                 (offset (truncate (* (beacon-preview--clamp-ratio progress)
+                (offset (truncate (* (beacon-preview--clamp-ratio progress)
                                       line-span))))
             (forward-line offset)
             (line-beginning-position)))))))
 
+(defun beacon-preview--source-block-progress-at-pos (range position)
+  "Return POSITION's approximate progress through source block RANGE."
+  (when-let* ((begin (plist-get range :begin))
+              (end (plist-get range :end)))
+    (when (and (integer-or-marker-p begin)
+               (integer-or-marker-p end)
+               (integer-or-marker-p position)
+               (<= begin end))
+      (let* ((begin-line (line-number-at-pos begin))
+             (end-line (line-number-at-pos end))
+             (position-line (line-number-at-pos
+                             (min (max position begin) end)))
+             (line-span (- end-line begin-line)))
+        (if (> line-span 0)
+            (beacon-preview--clamp-ratio
+             (/ (float (- position-line begin-line))
+                (float line-span)))
+          (beacon-preview--clamp-ratio
+           (/ (float (- (min (max position begin) end) begin))
+              (float (max 1 (- end begin))))))))))
+
+(defun beacon-preview--current-source-preview-context (&optional window position)
+  "Return source-to-preview sync context for the current nearby block.
+
+The context is a plist with `:anchor', `:ratio', and `:block-progress'.  It is
+based on POSITION, defaulting to point, inside WINDOW, defaulting to the
+selected window."
+  (let* ((position (or position (point)))
+         (entry (beacon-preview--source-block-entry-at-pos position))
+         (kind (alist-get 'kind entry))
+         (index (alist-get 'index entry)))
+    (when-let* ((preview-entry (and kind index
+                                    (beacon-preview--preview-entry-at-index
+                                     kind index)))
+                (anchor (alist-get 'anchor preview-entry)))
+      (let* ((range (list :begin (alist-get 'begin entry)
+                          :end (alist-get 'end entry)))
+             (ratio (beacon-preview--window-visible-ratio-for-pos
+                     (or window (selected-window))
+                     position))
+             (block-progress
+              (beacon-preview--source-block-progress-at-pos range position)))
+        (list :anchor anchor
+              :kind kind
+              :index index
+              :ratio ratio
+              :block-progress block-progress)))))
+
 (defun beacon-preview--apply-preview-entry-to-source (entry source-buffer)
-  "Move SOURCE-BUFFER to the position identified by preview manifest ENTRY.
+  "Move SOURCE-BUFFER to the position identified by preview ENTRY.
 
 The matched source block is first aligned to ENTRY's `ratio' so the source
 window mirrors the preview's scroll position, then point is moved to the
@@ -1869,10 +1956,10 @@ falls back to the current heading position."
   (beacon-preview--target-source-position-at-pos (point)))
 
 (defun beacon-preview--anchor-kind (anchor)
-  "Return the manifest kind for ANCHOR, or nil when unknown."
+  "Return the preview kind for ANCHOR, or nil when unknown."
   (when-let ((entry (seq-find (lambda (candidate)
                                 (equal (alist-get 'anchor candidate) anchor))
-                              (beacon-preview--manifest-entries))))
+                              (beacon-preview--preview-entries-list))))
     (alist-get 'kind entry)))
 
 (defun beacon-preview--nearest-block-anchor-at-pos (pos)
@@ -1902,12 +1989,18 @@ next block."
             (unless (member anchor anchors)
               (push anchor anchors))))))))
 
-(defun beacon-preview--jump-script (anchor &optional ratio)
-  "Return JavaScript to jump to ANCHOR, offset by RATIO of the viewport height."
+(defun beacon-preview--jump-script (anchor &optional ratio block-progress flash-anchor)
+  "Return JavaScript to jump to ANCHOR.
+
+RATIO offsets the target by a fraction of the viewport height.  BLOCK-PROGRESS,
+when non-nil, targets the corresponding fraction within ANCHOR's element.
+FLASH-ANCHOR defaults to ANCHOR and controls which element is flashed."
   (format
    (concat "(function () {"
            "  var anchor = %s;"
            "  var ratio = %s;"
+           "  var blockProgress = %s;"
+           "  var flashAnchor = %s;"
            "  var retries = %d;"
            "  var retryDelay = %d;"
            "  function jump() {"
@@ -1920,10 +2013,11 @@ next block."
            "      return false;"
            "    }"
            "    var rect = element.getBoundingClientRect();"
-           "    var targetY = rect.top + window.scrollY - (window.innerHeight * ratio);"
+           "    blockProgress = Math.max(0, Math.min(1, blockProgress));"
+           "    var targetY = rect.top + window.scrollY + (rect.height * blockProgress) - (window.innerHeight * ratio);"
            "    window.scrollTo(0, Math.max(0, targetY));"
            "    if (window.BeaconPreview && typeof window.BeaconPreview.flashAnchor === 'function') {"
-           "      window.BeaconPreview.flashAnchor(anchor);"
+           "      window.BeaconPreview.flashAnchor(flashAnchor);"
            "    }"
            "    return true;"
            "  }"
@@ -1933,6 +2027,10 @@ next block."
    (if ratio
        (format "%.10f" ratio)
      "0.0")
+   (if block-progress
+       (format "%.10f" block-progress)
+     "0.0")
+   (beacon-preview--js-string-literal (or flash-anchor anchor))
    beacon-preview-jump-retry-count
    beacon-preview-jump-retry-delay-ms))
 
@@ -2034,7 +2132,7 @@ effective vertical position within the preview viewport, plus optional
    "})()"))
 
 (defun beacon-preview--decode-visible-preview-entry (value)
-  "Decode VALUE returned from preview JavaScript into a manifest-like alist."
+  "Decode VALUE returned from preview JavaScript into a preview-entry-like alist."
   (when (and (stringp value)
              (not (string-empty-p value)))
     (condition-case nil
@@ -2115,20 +2213,20 @@ This aims to be closer to Pandoc's generated heading identifiers."
         (message "%s" anchor))
       anchor)))
 
-(defun beacon-preview--manifest-entries ()
+(defun beacon-preview--preview-entries-list ()
   "Return cached preview entries as a plain list."
-  (and beacon-preview--manifest
-       (append beacon-preview--manifest nil)))
+  (and beacon-preview--preview-entries
+       (append beacon-preview--preview-entries nil)))
 
 (defun beacon-preview--resolve-heading-anchor (heading)
-  "Resolve HEADING through the loaded manifest if possible."
+  "Resolve HEADING through the preview entries if possible."
   (let* ((kind (format "h%d" (plist-get heading :level)))
          (text (plist-get heading :text))
          (occurrence (if (derived-mode-p 'org-mode)
                          (beacon-preview--org-heading-occurrence heading)
                        (beacon-preview--markdown-heading-occurrence heading)))
          (matches nil))
-    (dolist (entry (beacon-preview--manifest-entries))
+    (dolist (entry (beacon-preview--preview-entries-list))
       (when (and (equal (alist-get 'kind entry) kind)
                  (equal (alist-get 'text entry) text))
         (push entry matches)))

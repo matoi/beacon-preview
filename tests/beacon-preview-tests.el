@@ -35,8 +35,8 @@
     (should-not (string= dir-a-1 dir-b))
     (should (string-match-p "sample-" dir-a-1))))
 
-(ert-deftest beacon-preview-current-heading-anchor-prefers-manifest ()
-  (let ((beacon-preview--manifest
+(ert-deftest beacon-preview-current-heading-anchor-prefers-preview-entry ()
+  (let ((beacon-preview--preview-entries
          '(((kind . "h2") (text . "Repeat") (anchor . "repeat"))
            ((kind . "h2") (text . "Repeat") (anchor . "repeat-1")))))
     (with-temp-buffer
@@ -46,7 +46,7 @@
       (should (string= (beacon-preview-current-heading-anchor) "repeat-1")))))
 
 (ert-deftest beacon-preview-current-heading-anchor-falls-back-to-slug ()
-  (let ((beacon-preview--manifest nil))
+  (let ((beacon-preview--preview-entries nil))
     (with-temp-buffer
       (insert "# Top\n\n## Code Section\nBody\n")
       (goto-char (point-max))
@@ -54,15 +54,15 @@
       (should (string= (beacon-preview-current-heading-anchor) "code-section")))))
 
 (ert-deftest beacon-preview-current-heading-anchor-falls-back-with-duplicates ()
-  (let ((beacon-preview--manifest nil))
+  (let ((beacon-preview--preview-entries nil))
     (with-temp-buffer
       (insert "# Top\n\n## Repeat\nA\n\n## Repeat\nB\n")
       (goto-char (point-max))
       (setq-local major-mode 'markdown-mode)
       (should (string= (beacon-preview-current-heading-anchor) "repeat-1")))))
 
-(ert-deftest beacon-preview-current-heading-anchor-falls-back-when-manifest-entry-is-missing ()
-  (let ((beacon-preview--manifest
+(ert-deftest beacon-preview-current-heading-anchor-falls-back-when-preview-entry-is-missing ()
+  (let ((beacon-preview--preview-entries
          '(((kind . "h2") (text . "Repeat") (anchor . "repeat")))))
     (with-temp-buffer
       (insert "# Top\n\n## Repeat\nA\n\n## Repeat\nB\n")
@@ -70,8 +70,8 @@
       (setq-local major-mode 'markdown-mode)
       (should (string= (beacon-preview-current-heading-anchor) "repeat-1")))))
 
-(ert-deftest beacon-preview-current-heading-anchor-falls-back-when-manifest-text-disagrees ()
-  (let ((beacon-preview--manifest
+(ert-deftest beacon-preview-current-heading-anchor-falls-back-when-preview-entry-text-disagrees ()
+  (let ((beacon-preview--preview-entries
          '(((kind . "h2") (text . "Other Section") (anchor . "other-section"))
            ((kind . "h2") (text . "Still Other") (anchor . "still-other")))))
     (with-temp-buffer
@@ -80,8 +80,8 @@
       (setq-local major-mode 'markdown-mode)
       (should (string= (beacon-preview-current-heading-anchor) "real-section")))))
 
-(ert-deftest beacon-preview-org-current-heading-anchor-prefers-manifest ()
-  (let ((beacon-preview--manifest
+(ert-deftest beacon-preview-org-current-heading-anchor-prefers-preview-entry ()
+  (let ((beacon-preview--preview-entries
          '(((kind . "h1") (text . "Title") (anchor . "title"))
            ((kind . "h2") (text . "Section") (anchor . "section-1")))))
     (with-temp-buffer
@@ -155,7 +155,7 @@
                    '(:level 2 :text "状態モデル: per-position tracker 配列")))))
 
 (ert-deftest beacon-preview-current-heading-anchor-inside-fenced-code-block ()
-  (let ((beacon-preview--manifest
+  (let ((beacon-preview--preview-entries
          '(((kind . "h2")
             (text . "状態モデル: per-position tracker 配列")
             (anchor . "状態モデル-per-position-tracker-配列")))))
@@ -175,7 +175,7 @@
                "状態モデル-per-position-tracker-配列")))))
 
 (ert-deftest beacon-preview-current-block-anchor-resolves-fenced-code-block-to-pre ()
-  (let ((beacon-preview--manifest
+  (let ((beacon-preview--preview-entries
          '(((kind . "h2") (text . "Section") (anchor . "section"))
            ((kind . "pre") (index . 1) (anchor . "beacon-pre-1"))
            ((kind . "pre") (index . 2) (anchor . "beacon-pre-2")))))
@@ -191,7 +191,7 @@
                        "beacon-pre-2")))))
 
 (ert-deftest beacon-preview-current-block-anchor-resolves-fenced-math-block-to-paragraph ()
-  (let ((beacon-preview--manifest
+  (let ((beacon-preview--preview-entries
          '(((kind . "p") (index . 1) (anchor . "beacon-p-1"))
            ((kind . "pre") (index . 1) (anchor . "beacon-pre-1")))))
     (with-temp-buffer
@@ -215,7 +215,7 @@
                        "beacon-pre-1")))))
 
 (ert-deftest beacon-preview-current-block-anchor-keeps-fenced-math-as-pre-for-markdown-input ()
-  (let ((beacon-preview--manifest
+  (let ((beacon-preview--preview-entries
          '(((kind . "pre") (index . 1) (anchor . "beacon-pre-1"))
            ((kind . "pre") (index . 2) (anchor . "beacon-pre-2")))))
     (with-temp-buffer
@@ -257,7 +257,7 @@
                        "p"))))))
 
 (ert-deftest beacon-preview-current-anchor-falls-back-to-heading-when-block-anchor-is-missing ()
-  (let ((beacon-preview--manifest
+  (let ((beacon-preview--preview-entries
          '(((kind . "h2")
             (text . "状態モデル: per-position tracker 配列")
             (anchor . "状態モデル-per-position-tracker-配列")))))
@@ -275,7 +275,7 @@
                "状態モデル-per-position-tracker-配列")))))
 
 (ert-deftest beacon-preview-current-block-anchor-resolves-blockquote ()
-  (let ((beacon-preview--manifest
+  (let ((beacon-preview--preview-entries
          '(((kind . "h2") (text . "Section") (anchor . "section"))
            ((kind . "blockquote") (index . 1) (anchor . "beacon-blockquote-1"))
            ((kind . "blockquote") (index . 2) (anchor . "beacon-blockquote-2")))))
@@ -292,7 +292,7 @@
                        "beacon-blockquote-2")))))
 
 (ert-deftest beacon-preview-current-block-anchor-resolves-table ()
-  (let ((beacon-preview--manifest
+  (let ((beacon-preview--preview-entries
          '(((kind . "h2") (text . "Section") (anchor . "section"))
            ((kind . "table") (index . 1) (anchor . "beacon-table-1"))
            ((kind . "table") (index . 2) (anchor . "beacon-table-2")))))
@@ -312,8 +312,22 @@
       (should (string= (beacon-preview-current-block-anchor)
                        "beacon-table-2")))))
 
+(ert-deftest beacon-preview-current-block-anchor-resolves-markdown-table-cell ()
+  (let ((beacon-preview--preview-entries
+         '(((kind . "table") (index . 1) (anchor . "beacon-table-1")))))
+    (with-temp-buffer
+      (insert
+       "| A | B |\n"
+       "| --- | --- |\n"
+       "| 1 | 2 |\n")
+      (goto-char (point-min))
+      (search-forward "2")
+      (setq-local major-mode 'markdown-mode)
+      (should (string= (beacon-preview-current-block-anchor)
+                       "beacon-table-1")))))
+
 (ert-deftest beacon-preview-current-block-anchor-resolves-list-item ()
-  (let ((beacon-preview--manifest
+  (let ((beacon-preview--preview-entries
          '(((kind . "h2") (text . "Section") (anchor . "section"))
            ((kind . "li") (index . 1) (anchor . "beacon-li-1"))
            ((kind . "li") (index . 2) (anchor . "beacon-li-2")))))
@@ -330,7 +344,7 @@
                        "beacon-li-2")))))
 
 (ert-deftest beacon-preview-current-block-anchor-resolves-paragraph ()
-  (let ((beacon-preview--manifest
+  (let ((beacon-preview--preview-entries
          '(((kind . "h2") (text . "Section") (anchor . "section"))
            ((kind . "p") (index . 1) (anchor . "beacon-p-1"))
            ((kind . "p") (index . 2) (anchor . "beacon-p-2")))))
@@ -386,7 +400,7 @@
       (should (= (beacon-preview--markdown-paragraph-index) 7)))))
 
 (ert-deftest beacon-preview-current-block-anchor-prefers-treesit-entry ()
-  (let ((beacon-preview--manifest
+  (let ((beacon-preview--preview-entries
          '(((kind . "li") (index . 3) (anchor . "beacon-li-3")))))
     (with-temp-buffer
       (insert "placeholder\n")
@@ -415,7 +429,7 @@
                      '(:begin 10 :end 49))))))
 
 (ert-deftest beacon-preview-org-current-block-anchor-resolves-list-item ()
-  (let ((beacon-preview--manifest
+  (let ((beacon-preview--preview-entries
          '(((kind . "li") (index . 1) (anchor . "beacon-li-1"))
            ((kind . "li") (index . 2) (anchor . "beacon-li-2")))))
     (with-temp-buffer
@@ -428,7 +442,7 @@
                        "beacon-li-2")))))
 
 (ert-deftest beacon-preview-org-current-block-anchor-resolves-paragraph ()
-  (let ((beacon-preview--manifest
+  (let ((beacon-preview--preview-entries
          '(((kind . "p") (index . 1) (anchor . "beacon-p-1"))
            ((kind . "p") (index . 2) (anchor . "beacon-p-2")))))
     (with-temp-buffer
@@ -444,7 +458,7 @@
                        "beacon-p-2")))))
 
 (ert-deftest beacon-preview-org-current-block-anchor-resolves-latex-environment-to-paragraph ()
-  (let ((beacon-preview--manifest
+  (let ((beacon-preview--preview-entries
          '(((kind . "p") (index . 1) (anchor . "beacon-p-1"))
            ((kind . "pre") (index . 1) (anchor . "beacon-pre-1")))))
     (with-temp-buffer
@@ -491,7 +505,7 @@
         (should-not (beacon-preview--org-element-preview-kind wrapper))))))
 
 (ert-deftest beacon-preview-org-current-block-anchor-resolves-quote-block ()
-  (let ((beacon-preview--manifest
+  (let ((beacon-preview--preview-entries
          '(((kind . "blockquote") (index . 1) (anchor . "beacon-blockquote-1")))))
     (with-temp-buffer
       (insert
@@ -505,7 +519,7 @@
                        "beacon-blockquote-1")))))
 
 (ert-deftest beacon-preview-org-current-block-anchor-resolves-source-block ()
-  (let ((beacon-preview--manifest
+  (let ((beacon-preview--preview-entries
          '(((kind . "pre") (index . 1) (anchor . "beacon-pre-1")))))
     (with-temp-buffer
       (insert
@@ -519,7 +533,7 @@
                        "beacon-pre-1")))))
 
 (ert-deftest beacon-preview-org-current-block-anchor-resolves-table ()
-  (let ((beacon-preview--manifest
+  (let ((beacon-preview--preview-entries
          '(((kind . "table") (index . 1) (anchor . "beacon-table-1")))))
     (with-temp-buffer
       (insert
@@ -533,8 +547,22 @@
       (should (string= (beacon-preview-current-block-anchor)
                        "beacon-table-1")))))
 
+(ert-deftest beacon-preview-org-current-block-anchor-resolves-table-cell ()
+  (let ((beacon-preview--preview-entries
+         '(((kind . "table") (index . 1) (anchor . "beacon-table-1")))))
+    (with-temp-buffer
+      (insert
+       "| A | B |\n"
+       "|---+---|\n"
+       "| 1 | 2 |\n")
+      (goto-char (point-min))
+      (search-forward "2")
+      (setq-local major-mode 'org-mode)
+      (should (string= (beacon-preview-current-block-anchor)
+                       "beacon-table-1")))))
+
 (ert-deftest beacon-preview-current-anchor-falls-back-to-heading-when-paragraph-anchor-is-missing ()
-  (let ((beacon-preview--manifest
+  (let ((beacon-preview--preview-entries
          '(((kind . "h2") (text . "Section") (anchor . "section")))))
     (with-temp-buffer
       (insert
@@ -547,7 +575,7 @@
                        "section")))))
 
 (ert-deftest beacon-preview-current-anchor-prefers-previous-block-on-blank-line ()
-  (let ((beacon-preview--manifest
+  (let ((beacon-preview--preview-entries
          '(((kind . "h2") (text . "HTML Pipeline") (anchor . "html-pipeline"))
            ((kind . "p") (index . 1) (anchor . "beacon-p-1"))
            ((kind . "li") (index . 1) (anchor . "beacon-li-1"))
@@ -563,7 +591,7 @@
        "- `id` attributes usable as anchor targets\n"
        "- `data-beacon-kind`\n"
        "- `data-beacon-index`\n"
-       "- manifest metadata for editor-side lookup\n"
+       "- preview entry metadata for editor-side lookup\n"
        "- a browser-side `window.BeaconPreview` API\n\n"
        "That browser-side API exposes:\n")
       (setq-local major-mode 'markdown-mode)
@@ -913,6 +941,13 @@
     (should (string-match-p "setTimeout" script))
     (should (string-match-p "BeaconPreview\\.flashAnchor" script))))
 
+(ert-deftest beacon-preview-jump-script-supports-block-progress ()
+  (let ((script (beacon-preview--jump-script "beacon-p-1" 0.25 0.75 "flash-me")))
+    (should (string-match-p "var blockProgress = 0\\.7500000000" script))
+    (should (string-match-p "var flashAnchor = \"flash-me\"" script))
+    (should (string-match-p "rect\\.height \\* blockProgress" script))
+    (should (string-match-p "flashAnchor(flashAnchor)" script))))
+
 (ert-deftest beacon-preview-js-string-literal-escapes-all-terminators ()
   "Every character that can terminate or reinterpret a JS double-quoted
 string literal (including when embedded in <script>) must be escaped."
@@ -953,6 +988,12 @@ parsed back via JSON, it must recover the exact original string."
            (beacon-preview--js-string-literal anchor))))
     (should (string-match-p "flashAnchor(\"x\\\\\"; y\")" script))))
 
+(ert-deftest beacon-preview-flash-css-adds-visible-table-outline ()
+  (let ((css (beacon-preview--flash-css)))
+    (should (string-match-p "table\\.beacon-preview-flash-subtle" css))
+    (should (string-match-p "table\\.beacon-preview-flash-strong" css))
+    (should (string-match-p "outline-offset: 2px" css))))
+
 (ert-deftest beacon-preview-visible-preview-entry-script-prefers-viewport-top ()
   (let ((script (beacon-preview--visible-preview-entry-script)))
     (should (string-match-p "collectEntries" script))
@@ -969,6 +1010,25 @@ parsed back via JSON, it must recover the exact original string."
     (should (= (alist-get 'index entry) 1))
     (should (= (alist-get 'ratio entry) 0.2))
     (should (= (alist-get 'block_progress entry) 0.6))))
+
+(ert-deftest beacon-preview-current-source-preview-context-uses-cursor-block-progress ()
+  (let ((beacon-preview--preview-entries
+         '(((kind . "p") (index . 1) (anchor . "beacon-p-1")))))
+    (with-temp-buffer
+      (insert "first line\nsecond line\nthird line\n")
+      (setq-local major-mode 'markdown-mode)
+      (goto-char (point-min))
+      (search-forward "second")
+      (cl-letf (((symbol-function 'beacon-preview--window-visible-ratio-for-pos)
+                 (lambda (_window position)
+                   (should (= position (point)))
+                   0.4)))
+        (let ((context (beacon-preview--current-source-preview-context
+                        (selected-window))))
+          (should (equal (plist-get context :anchor) "beacon-p-1"))
+          (should (= (plist-get context :ratio) 0.4))
+          (should (> (plist-get context :block-progress) 0.0))
+          (should (< (plist-get context :block-progress) 1.0)))))))
 
 (ert-deftest beacon-preview-position-in-range-by-progress-uses-logical-lines ()
   (with-temp-buffer
@@ -1360,7 +1420,7 @@ LineTerminators) must be escaped so they cannot terminate the literal."
         (kill-buffer preview-buffer)))))
 
 (ert-deftest beacon-preview-edited-anchors-deduplicates-multiple-edits ()
-  (let ((beacon-preview--manifest
+  (let ((beacon-preview--preview-entries
          '(((kind . "p") (index . 1) (anchor . "beacon-p-1"))
            ((kind . "p") (index . 2) (anchor . "beacon-p-2")))))
     (with-temp-buffer
@@ -1381,7 +1441,7 @@ LineTerminators) must be escaped so they cannot terminate the literal."
                        '("beacon-p-1" "beacon-p-2")))))))
 
 (ert-deftest beacon-preview-edited-anchors-resolve-near-blank-boundaries ()
-  (let ((beacon-preview--manifest
+  (let ((beacon-preview--preview-entries
          '(((kind . "p") (index . 1) (anchor . "beacon-p-1"))
            ((kind . "p") (index . 2) (anchor . "beacon-p-2")))))
     (with-temp-buffer
@@ -1462,7 +1522,7 @@ LineTerminators) must be escaped so they cannot terminate the literal."
             (should (string-prefix-p
                      (file-name-as-directory (expand-file-name beacon-preview-temporary-root))
                      (plist-get artifacts :html)))
-            (should beacon-preview--manifest)
+            (should beacon-preview--preview-entries)
             (should beacon-preview--preview-html-cache)
             (kill-buffer (current-buffer))))
       (ignore-errors
@@ -1491,7 +1551,7 @@ LineTerminators) must be escaped so they cannot terminate the literal."
                          (insert-file-contents html-path)
                          (buffer-string))))
             (should (file-exists-p html-path))
-            (should beacon-preview--manifest)
+            (should beacon-preview--preview-entries)
             (should beacon-preview--preview-html-cache)
             (should (string-match-p "data-beacon-kind=\"h2\"" html))
             (should (string-match-p "data-beacon-kind=\"p\"" html))
@@ -1518,7 +1578,7 @@ LineTerminators) must be escaped so they cannot terminate the literal."
                      (file-name-as-directory (expand-file-name beacon-preview-temporary-root))
                      (plist-get artifacts :html)))
             (should (string-match-p "draft-notes\\.html\\'" (plist-get artifacts :html)))
-            (should beacon-preview--manifest)
+            (should beacon-preview--preview-entries)
             (should beacon-preview--preview-html-cache)))
       (delete-directory tmp-root t))))
 
@@ -2307,10 +2367,10 @@ server-reported error as a `user-error' rather than silently producing HTML."
       (delete-directory tmp-root t))))
 
 (ert-deftest beacon-preview-clear-preview-cache-clears-in-memory-entries ()
-  (let ((beacon-preview--manifest '(((kind . "p") (index . 1))))
+  (let ((beacon-preview--preview-entries '(((kind . "p") (index . 1))))
         (beacon-preview--preview-html-cache '(:ordered (((kind . "p"))))))
     (beacon-preview-clear-preview-cache)
-    (should-not beacon-preview--manifest)
+    (should-not beacon-preview--preview-entries)
     (should-not beacon-preview--preview-html-cache)))
 
 (ert-deftest beacon-preview-dwim-url-adds-anchor-fragment ()
@@ -2516,6 +2576,31 @@ server-reported error as a `user-error' rather than silently producing HTML."
         (beacon-preview-jump-to-anchor "section")
         (should (eq captured-window 'source-window))
         (should (string-match-p "section" executed))))))
+
+(ert-deftest beacon-preview-jump-to-anchor-uses-current-source-context ()
+  (with-temp-buffer
+    (setq-local beacon-preview--last-build-tick (buffer-chars-modified-tick))
+    (let ((executed nil)
+          (fallback-called nil))
+      (cl-letf (((symbol-function 'beacon-preview--source-window)
+                 (lambda (&optional _buffer)
+                   'source-window))
+                ((symbol-function 'beacon-preview--current-source-preview-context)
+                 (lambda (window)
+                   (should (eq window 'source-window))
+                   '(:anchor "beacon-p-1" :ratio 0.25 :block-progress 0.75)))
+                ((symbol-function 'beacon-preview--target-source-position-maybe)
+                 (lambda ()
+                   (setq fallback-called t)
+                   'target-pos))
+                ((symbol-function 'beacon-preview--execute-script)
+                 (lambda (script)
+                   (setq executed script))))
+        (beacon-preview-jump-to-anchor "beacon-p-1")
+        (should-not fallback-called)
+        (should (string-match-p "beacon-p-1" executed))
+        (should (string-match-p "var ratio = 0\\.2500000000" executed))
+        (should (string-match-p "var blockProgress = 0\\.7500000000" executed))))))
 
 (ert-deftest beacon-preview-sync-source-to-preview-moves-to-visible-markdown-block ()
   (let ((source-buffer (generate-new-buffer " *beacon-preview-source*"))

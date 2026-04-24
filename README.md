@@ -309,7 +309,9 @@ This single command handles the entire preview lifecycle:
 
 The jump prefers the nearest block-level element (code block, blockquote,
 table, list item, or paragraph) and falls back to the current heading. It also
-tries to roughly preserve point's vertical position inside the source window.
+uses point's position within that source block, plus point's vertical position
+inside the source window, to align the corresponding preview block more closely
+than a plain block-start jump.
 
 For source-side block matching, Markdown uses cached tree-sitter entries and
 Org uses cached `org-element` entries. This keeps kind/index lookup aligned

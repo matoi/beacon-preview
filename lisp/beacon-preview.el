@@ -919,7 +919,7 @@ Set to nil to disable interception and let the xwidget follow links normally."
 (defvar beacon-preview--last-html-path nil
   "Path to the last generated preview HTML file.")
 
-(defvar beacon-preview--manifest nil
+(defvar beacon-preview--preview-entries nil
   "Cached preview entries for source-to-preview anchor lookup.")
 
 (defvar-local beacon-preview--preview-html-cache nil

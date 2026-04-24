@@ -74,7 +74,7 @@
 (defvar beacon-preview--external-link-sentinel-prefix)
 (defvar beacon-preview--last-url)
 (defvar beacon-preview--last-html-path)
-(defvar beacon-preview--manifest)
+(defvar beacon-preview--preview-entries)
 (defvar beacon-preview--preview-html-cache)
 (defvar beacon-preview--xwidget-buffer)
 (defvar beacon-preview--last-build-tick)
@@ -239,8 +239,12 @@ dispatch the click action once. PHASE is the WebKit phase string from
     (beacon-preview--install-xwidget-callback-for-session
      (beacon-preview--xwidget-session-for-buffer preview-buffer))))
 
-(defun beacon-preview--queue-position-sync (preview-buffer anchor ratio)
-  "Queue a post-load sync for PREVIEW-BUFFER to ANCHOR with optional RATIO."
+(defun beacon-preview--queue-position-sync
+    (preview-buffer anchor ratio &optional block-progress flash-anchor)
+  "Queue a post-load sync for PREVIEW-BUFFER to ANCHOR.
+
+RATIO and BLOCK-PROGRESS describe the target viewport placement.  FLASH-ANCHOR
+defaults to ANCHOR."
   (when (and (buffer-live-p preview-buffer)
              anchor)
     (with-current-buffer preview-buffer
@@ -249,7 +253,8 @@ dispatch the click action once. PHASE is the WebKit phase string from
       (beacon-preview--debug "queue sync anchor=%S ratio=%S buffer=%s"
                              anchor ratio (buffer-name preview-buffer))
       (setq beacon-preview--pending-sync-script
-            (beacon-preview--jump-script anchor ratio)))))
+            (beacon-preview--jump-script
+             anchor ratio block-progress flash-anchor)))))
 
 (defun beacon-preview--link-preview-buffers (source-buffer preview-buffer)
   "Record bidirectional lifecycle links between SOURCE-BUFFER and PREVIEW-BUFFER."
@@ -262,21 +267,26 @@ dispatch the click action once. PHASE is the WebKit phase string from
       (setq beacon-preview--source-buffer source-buffer)
       (add-hook 'kill-buffer-hook #'beacon-preview--cleanup-source-on-preview-kill nil t))))
 
-(defun beacon-preview--initialize-preview-buffer (source-buffer session anchor ratio)
+(defun beacon-preview--initialize-preview-buffer
+    (source-buffer session anchor ratio &optional block-progress flash-anchor)
   "Track xwidget SESSION for SOURCE-BUFFER and queue initial sync.
 
-ANCHOR and RATIO describe the initial post-load position sync to request for the
-new preview buffer. The xwidget callback must already be installed for SESSION."
+ANCHOR, RATIO, and BLOCK-PROGRESS describe the initial post-load position sync
+to request for the new preview buffer. The xwidget callback must already be
+installed for SESSION."
   (let ((preview-buffer (and session (xwidget-buffer session))))
     (when (buffer-live-p preview-buffer)
       (beacon-preview--link-preview-buffers source-buffer preview-buffer)
       (beacon-preview--label-preview-buffer preview-buffer source-buffer)
-      (beacon-preview--queue-position-sync preview-buffer anchor ratio))
+      (beacon-preview--queue-position-sync
+       preview-buffer anchor ratio block-progress flash-anchor))
     preview-buffer))
 
-(defun beacon-preview--navigate-preview-session (preview-buffer window url anchor ratio)
-  "Reload PREVIEW-BUFFER in WINDOW to URL and queue sync to ANCHOR at RATIO."
-  (beacon-preview--queue-position-sync preview-buffer anchor ratio)
+(defun beacon-preview--navigate-preview-session
+    (preview-buffer window url anchor ratio &optional block-progress flash-anchor)
+  "Reload PREVIEW-BUFFER in WINDOW to URL and queue sync to ANCHOR."
+  (beacon-preview--queue-position-sync
+   preview-buffer anchor ratio block-progress flash-anchor)
   (save-selected-window
     (if (window-live-p window)
         (with-selected-window window
@@ -673,15 +683,28 @@ it is currently hidden behind another buffer."
          (origin-buffer (current-buffer))
          (source-window (beacon-preview--source-window source-buffer))
          (origin-window (selected-window))
-         (target-source-position (beacon-preview--target-source-position-maybe))
-         (raw-ratio (and anchor
-                          source-window
-                          target-source-position
-                          (beacon-preview--window-visible-ratio-for-pos
+         (source-context (and source-window
+                              (beacon-preview--current-source-preview-context
+                               source-window)))
+         (context-anchor (plist-get source-context :anchor))
+         (use-source-context (and anchor
+                                  (equal anchor context-anchor)))
+         (target-source-position (unless use-source-context
+                                   (beacon-preview--target-source-position-maybe)))
+         (raw-ratio (if use-source-context
+                        (plist-get source-context :ratio)
+                      (and anchor
                            source-window
-                           target-source-position)))
-         (ratio (and raw-ratio
-                     (beacon-preview--effective-window-ratio raw-ratio)))
+                           target-source-position
+                           (beacon-preview--window-visible-ratio-for-pos
+                            source-window
+                            target-source-position))))
+         (ratio (if use-source-context
+                    raw-ratio
+                  (and raw-ratio
+                       (beacon-preview--effective-window-ratio raw-ratio))))
+         (block-progress (and use-source-context
+                              (plist-get source-context :block-progress)))
          (url (if ratio
                   (beacon-preview--file-url file)
                 (beacon-preview--preview-url file anchor)))
@@ -703,16 +726,17 @@ it is currently hidden behind another buffer."
                         preview-buffer
                         (or window visible-preview-window)))))
     (beacon-preview--debug
-     "open-preview anchor=%S target-pos=%S raw-ratio=%S ratio=%S url=%s explicit=%S show-window=%S visible-window=%S"
-     anchor target-source-position raw-ratio ratio url explicit show-preview-window visible-preview-window)
+     "open-preview anchor=%S context=%S target-pos=%S raw-ratio=%S ratio=%S block-progress=%S url=%s explicit=%S show-window=%S visible-window=%S"
+     anchor use-source-context target-source-position raw-ratio ratio block-progress
+     url explicit show-preview-window visible-preview-window)
     (setq beacon-preview--last-url url)
     (setq beacon-preview--last-html-path (expand-file-name file))
     (unwind-protect
         (if session
             (progn
-              (beacon-preview--install-xwidget-callback-for-session session)
+             (beacon-preview--install-xwidget-callback-for-session session)
               (beacon-preview--navigate-preview-session
-               preview-buffer window url anchor ratio))
+               preview-buffer window url anchor ratio block-progress anchor))
           (when show-preview-window
             (save-selected-window
               (with-selected-window window
@@ -729,7 +753,9 @@ it is currently hidden behind another buffer."
                            source-buffer
                            created-session
                            anchor
-                           ratio))))))))
+                           ratio
+                           block-progress
+                           anchor))))))))
       (when (and (buffer-live-p opening-buffer)
                  (not (eq opening-buffer preview-buffer)))
         (kill-buffer opening-buffer))
@@ -739,7 +765,7 @@ it is currently hidden behind another buffer."
 (defun beacon-preview-clear-preview-cache ()
   "Clear cached preview entries for the current source buffer."
   (interactive)
-  (setq beacon-preview--manifest nil)
+  (setq beacon-preview--preview-entries nil)
   (setq beacon-preview--preview-html-cache nil))
 
 (defun beacon-preview--command-available-p (command)
@@ -1421,19 +1447,31 @@ first so the jump lands on aligned content."
   (beacon-preview--run-after-ensuring-fresh-preview
    (lambda ()
      (let* ((source-window (beacon-preview--source-window (current-buffer)))
-            (target-source-position (beacon-preview--target-source-position-maybe))
-            (raw-ratio (and source-window
-                            target-source-position
-                            (beacon-preview--window-visible-ratio-for-pos
-                             source-window
-                             target-source-position)))
-            (ratio (and raw-ratio
-                        (beacon-preview--effective-window-ratio raw-ratio))))
+            (source-context (and source-window
+                                 (beacon-preview--current-source-preview-context
+                                  source-window)))
+            (use-source-context (equal anchor
+                                       (plist-get source-context :anchor)))
+            (target-source-position (unless use-source-context
+                                      (beacon-preview--target-source-position-maybe)))
+            (raw-ratio (if use-source-context
+                           (plist-get source-context :ratio)
+                         (and source-window
+                              target-source-position
+                              (beacon-preview--window-visible-ratio-for-pos
+                               source-window
+                               target-source-position))))
+            (ratio (if use-source-context
+                       raw-ratio
+                     (and raw-ratio
+                          (beacon-preview--effective-window-ratio raw-ratio))))
+            (block-progress (and use-source-context
+                                 (plist-get source-context :block-progress))))
        (beacon-preview--debug
-        "jump-to-anchor anchor=%S target-pos=%S raw-ratio=%S ratio=%S"
-        anchor target-source-position raw-ratio ratio)
+        "jump-to-anchor anchor=%S context=%S target-pos=%S raw-ratio=%S ratio=%S block-progress=%S"
+        anchor use-source-context target-source-position raw-ratio ratio block-progress)
        (beacon-preview--execute-script
-        (beacon-preview--jump-script anchor ratio))))))
+        (beacon-preview--jump-script anchor ratio block-progress anchor))))))
 
 ;;;###autoload
 (defun beacon-preview-flash-current-target ()
