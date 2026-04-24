@@ -28,6 +28,12 @@ Without these, `beacon-preview` will not work:
 - a graphical Emacs session
 - Pandoc 3.0 or newer, built with the `+server` feature, installed and available in `PATH` (or configured explicitly from Emacs)
 
+If you use Emacs 30.2 on macOS, applying
+[matoi/emacs-xwidget-ns-fixes](https://github.com/matoi/emacs-xwidget-ns-fixes)
+may make xwidgets-related behavior more stable. This has not been verified
+extensively yet, so treat it as an experimental stability note rather than a
+hard requirement.
+
 ### Required per source type
 
 You only need the piece that matches the source you edit:
