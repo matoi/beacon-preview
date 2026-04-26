@@ -721,7 +721,7 @@ it is currently hidden behind another buffer."
          (window (and show-preview-window
                       (beacon-preview--show-preview-buffer
                        (or preview-buffer opening-buffer))))
-         (session (and (or show-preview-window visible-preview-window)
+         (session (and (buffer-live-p preview-buffer)
                        (beacon-preview--xwidget-session-for-buffer
                         preview-buffer
                         (or window visible-preview-window)))))
@@ -1123,13 +1123,52 @@ first."
              nil t)))
       (setq beacon-preview--build-request-buffer request-buffer))))
 
+(defun beacon-preview--refresh-decision-snapshot (trigger)
+  "Return a plist describing the refresh decision state for TRIGGER.
+
+Captures, in the current source buffer, the inputs consulted by the
+`after-save'/`after-revert' guards: the tracked xwidget buffer cell, whether
+it is live, the reverse-link from that preview buffer back to a source
+buffer, whether the reverse-link points at the current buffer, the
+`--tracked-preview-buffer' result (nil when the reverse-link rejects it),
+the xwidget session lookup result, and the composite `--live-preview-p'.
+
+Used by `beacon-preview--debug' to diagnose cases where an external file
+update does not drive a refresh, per the 2026-04-25 investigation: the
+xwidget quirk hypothesis is refuted upstream, so the remaining suspects
+are a killed preview buffer or a stale reverse-link."
+  (let* ((xbuf beacon-preview--xwidget-buffer)
+         (xbuf-live (and xbuf (buffer-live-p xbuf)))
+         (reverse-source
+          (and xbuf-live
+               (buffer-local-value 'beacon-preview--source-buffer xbuf)))
+         (reverse-matches (eq reverse-source (current-buffer)))
+         (tracked (beacon-preview--tracked-preview-buffer))
+         (session (beacon-preview--xwidget-session))
+         (live (beacon-preview--live-preview-p)))
+    (list :trigger trigger
+          :source-buffer (buffer-name)
+          :xwidget-buffer xbuf
+          :xwidget-buffer-live xbuf-live
+          :reverse-source reverse-source
+          :reverse-matches-current reverse-matches
+          :tracked-preview tracked
+          :session session
+          :live-preview-p live)))
+
 (defun beacon-preview--after-save ()
   "Refresh the current preview after saving the source buffer."
   (unwind-protect
-      (when (and beacon-preview-auto-refresh-on-save
-                 (beacon-preview--supported-source-mode-p)
-                 (buffer-file-name))
-        (beacon-preview-build-and-refresh))
+      (let ((snapshot
+             (and beacon-preview-debug
+                  (beacon-preview--refresh-decision-snapshot 'after-save))))
+        (when snapshot
+          (beacon-preview--debug "after-save decision: %S" snapshot))
+        (when (and beacon-preview-auto-refresh-on-save
+                   (beacon-preview--supported-source-mode-p)
+                   (buffer-file-name))
+          (beacon-preview--debug "after-save: triggering build-and-refresh")
+          (beacon-preview-build-and-refresh)))
     (setq beacon-preview--edited-positions nil)))
 
 (defun beacon-preview--after-revert ()
@@ -1139,11 +1178,27 @@ This is intended to catch externally modified files once their updated contents
 have been loaded into the current buffer, but only when a live preview session
 is already open for the current source buffer."
   (setq beacon-preview--edited-positions nil)
-  (when (and beacon-preview-auto-refresh-on-revert
-             (beacon-preview--supported-source-mode-p)
-             (buffer-file-name)
-             (beacon-preview--live-preview-p))
-    (beacon-preview-build-and-refresh)))
+  (let ((snapshot
+         (and beacon-preview-debug
+              (beacon-preview--refresh-decision-snapshot 'after-revert))))
+    (when snapshot
+      (beacon-preview--debug "after-revert decision: %S" snapshot))
+    (cond
+     ((not beacon-preview-auto-refresh-on-revert)
+      (beacon-preview--debug
+       "after-revert: skipped (auto-refresh-on-revert is nil)"))
+     ((not (beacon-preview--supported-source-mode-p))
+      (beacon-preview--debug
+       "after-revert: skipped (unsupported source mode %S)" major-mode))
+     ((not (buffer-file-name))
+      (beacon-preview--debug
+       "after-revert: skipped (buffer has no visited file)"))
+     ((not (beacon-preview--live-preview-p))
+      (beacon-preview--debug
+       "after-revert: skipped (live-preview-p nil): %S" snapshot))
+     (t
+      (beacon-preview--debug "after-revert: triggering build-and-refresh")
+      (beacon-preview-build-and-refresh)))))
 
 (defun beacon-preview--maybe-auto-start ()
   "Automatically start preview for the current buffer when configured.
